@@ -7,7 +7,8 @@ A custom launcher for Kindle devices, launched via KUAL (Kindle Unified Applicat
 - Full-screen interface that takes over from Kindle UI
 - Taskbar at the bottom of the screen
 - Swipe down from bottom to reveal menu
-- Menu with Apps, Settings, and Exit options
+- Menu with Apps, Settings, Check Update, and Exit options
+- **Auto-update**: Checks GitHub for new versions and updates automatically
 - Exit button returns to Kindle UI
 
 ## Installation
@@ -46,7 +47,17 @@ make clean
 5. Select from:
    - **Apps**: Open installed applications (coming soon)
    - **Settings**: Configure launcher settings (coming soon)
+   - **Check Update**: Manually check for updates from GitHub
    - **Exit**: Return to Kindle UI
+
+### Auto-Update
+
+KindleJap automatically checks for updates on startup. If a new version is available:
+- A dialog will appear asking if you want to update
+- Tap **UPDATE** to download and install the latest version
+- The app will restart after updating
+
+You can also manually check for updates from the menu.
 
 ## Project Structure
 
@@ -54,12 +65,14 @@ make clean
 japlat/
 ├── bin/                    # Compiled binaries and scripts
 │   ├── kindlejap-bin      # Main executable
-│   └── kindlejap.sh       # KUAL launch script
+│   ├── kindlejap.sh       # KUAL launch script
+│   └── update.sh          # Update script
 ├── src/
 │   └── kindlejap.c        # Main application source
 ├── lib/                    # Libraries (if needed)
 ├── extension.json         # KUAL extension configuration
 ├── Makefile               # Build system
+├── CHANGELOG.md           # Version history
 └── README.md              # This file
 ```
 
@@ -76,6 +89,9 @@ japlat/
 - [x] Touch input handling
 - [x] Taskbar with menu button
 - [x] Menu system (Apps, Settings, Exit)
+- [x] Auto-update system
+- [x] Check for updates on startup
+- [x] Update dialog with user confirmation
 - [ ] Apps launcher functionality
 - [ ] Settings persistence
 - [ ] App icons and better typography

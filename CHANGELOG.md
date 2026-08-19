@@ -2,6 +2,16 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [1.1.0] - 2026-08-19
+
+### Added
+- Auto-update system with GitHub integration
+- Check for updates on startup
+- Update dialog with user confirmation
+- Manual "Check Update" option in menu
+- Version comparison logic
+- Update download and install script
+
 ## [1.0.0] - 2026-08-19
 
 ### Added

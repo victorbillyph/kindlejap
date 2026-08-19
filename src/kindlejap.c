@@ -5,12 +5,21 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <linux/fb.h>
 #include <linux/input.h>
 #include <signal.h>
 #include <time.h>
 #include <dirent.h>
 #include <pthread.h>
+
+// Version
+#define KINDLEJAP_VERSION "1.1.0"
+
+// GitHub API URL for releases
+#define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
+#define UPDATE_DOWNLOAD_URL "https://github.com/victorbillyph/kindlejap/archive/refs/heads/master.zip"
+#define UPDATE_SCRIPT "/mnt/us/extensions/japlat/bin/update.sh"
 
 // Framebuffer structures
 struct fb_var_screeninfo vinfo;
@@ -27,6 +36,14 @@ volatile int running = 1;
 volatile int menu_visible = 0;
 volatile int menu_expanded = 0;
 
+// Update state
+volatile int show_update_dialog = 0;
+volatile int update_available = 0;
+volatile int update_downloading = 0;
+volatile int update_progress = 0;
+char latest_version[32] = "";
+char update_notes[1024] = "";
+
 // Menu items
 typedef struct {
     const char *name;
@@ -35,7 +52,7 @@ typedef struct {
     void (*action)(void);
 } MenuItem;
 
-MenuItem menu_items[4];
+MenuItem menu_items[5];
 int menu_item_count = 0;
 
 // Colors (grayscale for e-ink)
@@ -57,12 +74,20 @@ void draw_rect(int x, int y, int w, int h, unsigned char color);
 void draw_text(int x, int y, const char *text, unsigned char color, int scale);
 void draw_taskbar(void);
 void draw_menu(void);
+void draw_update_dialog(void);
 void handle_touch(int x, int y, int pressed);
 void handle_swipe(int start_x, int start_y, int end_x, int end_y);
 void action_exit(void);
 void action_apps(void);
 void action_settings(void);
+void action_check_update(void);
+void action_update_now(void);
+void action_update_yes(void);
+void action_update_no(void);
 void signal_handler(int sig);
+int check_for_updates(void);
+int compare_versions(const char *v1, const char *v2);
+int download_and_update(void);
 
 // Simple font data (5x7 pixels for each character)
 static const unsigned char font5x7[][7] = {
@@ -293,6 +318,131 @@ void draw_text(int x, int y, const char *text, unsigned char color, int scale) {
     }
 }
 
+int compare_versions(const char *v1, const char *v2) {
+    int major1, minor1, patch1;
+    int major2, minor2, patch2;
+
+    sscanf(v1, "%d.%d.%d", &major1, &minor1, &patch1);
+    sscanf(v2, "%d.%d.%d", &major2, &minor2, &patch2);
+
+    if (major1 != major2) return major1 - major2;
+    if (minor1 != minor2) return minor1 - minor2;
+    return patch1 - patch2;
+}
+
+int check_for_updates(void) {
+    printf("Checking for updates...\n");
+
+    // Use curl to fetch GitHub API
+    const char *cmd = "curl -s " GITHUB_API_URL " 2>/dev/null";
+    FILE *fp = popen(cmd, "r");
+    if (fp == NULL) {
+        fprintf(stderr, "Failed to check for updates\n");
+        return -1;
+    }
+
+    char buffer[4096];
+    char tag_name[32] = "";
+    char body[1024] = "";
+    int in_tag = 0;
+    int in_body = 0;
+    int body_idx = 0;
+
+    while (fgets(buffer, sizeof(buffer), fp) != NULL) {
+        // Parse tag_name
+        char *tag = strstr(buffer, "\"tag_name\":");
+        if (tag) {
+            char *start = strchr(tag + 11, '"');
+            if (start) {
+                start++;
+                char *end = strchr(start, '"');
+                if (end) {
+                    int len = end - start;
+                    if (len < 32) {
+                        strncpy(tag_name, start, len);
+                        tag_name[len] = '\0';
+                    }
+                }
+            }
+        }
+
+        // Parse body (simplified - just get first 200 chars)
+        char *body_start = strstr(buffer, "\"body\":");
+        if (body_start && !in_body) {
+            in_body = 1;
+            char *start = strchr(body_start + 7, '"');
+            if (start) {
+                start++;
+                int i = 0;
+                while (*start && *start != '"' && i < 200) {
+                    if (*start == '\\' && *(start+1) == 'n') {
+                        body[body_idx++] = '\n';
+                        start += 2;
+                    } else {
+                        body[body_idx++] = *start;
+                        start++;
+                    }
+                    i++;
+                }
+                body[body_idx] = '\0';
+                in_body = 0;
+            }
+        }
+    }
+
+    pclose(fp);
+
+    // If we got a tag name, compare versions
+    if (strlen(tag_name) > 0) {
+        // Remove 'v' prefix if present
+        char *ver = tag_name;
+        if (ver[0] == 'v') ver++;
+
+        strcpy(latest_version, ver);
+        strncpy(update_notes, body, sizeof(update_notes) - 1);
+
+        printf("Current: %s, Latest: %s\n", KINDLEJAP_VERSION, latest_version);
+
+        if (compare_versions(KINDLEJAP_VERSION, latest_version) < 0) {
+            printf("Update available!\n");
+            return 1; // Update available
+        } else {
+            printf("Already up to date.\n");
+            return 0; // Up to date
+        }
+    }
+
+    return -1; // Error parsing
+}
+
+int download_and_update(void) {
+    printf("Starting update...\n");
+    update_downloading = 1;
+    update_progress = 0;
+    redraw_screen();
+
+    // Run the update script
+    int ret = system(UPDATE_SCRIPT " " KINDLEJAP_VERSION " " UPDATE_DOWNLOAD_URL);
+
+    update_downloading = 0;
+
+    if (ret == 0) {
+        printf("Update completed successfully!\n");
+        update_progress = 100;
+        redraw_screen();
+        sleep(2);
+        // Restart the app
+        execl(UPDATE_SCRIPT, UPDATE_SCRIPT, "restart", NULL);
+        return 0;
+    } else {
+        printf("Update failed!\n");
+        update_progress = -1;
+        redraw_screen();
+        sleep(2);
+        return -1;
+    }
+}
+
 void draw_taskbar(void) {
     int taskbar_y = screen_height - TASKBAR_HEIGHT;
 
@@ -370,6 +520,107 @@ void draw_menu(void) {
     menu_items[2].h = item_height;
     menu_items[2].active = 1;
 }
+    if (!show_update_dialog) return;
+
+    // Dialog box
+    int dlg_width = 400;
+    int dlg_height = 250;
+    int dlg_x = (screen_width - dlg_width) / 2;
+    int dlg_y = (screen_height - dlg_height) / 2;
+
+    // Background overlay
+    draw_rect(0, 0, screen_width, screen_height, COLOR_DARK);
+
+    // Dialog background
+    draw_rect(dlg_x, dlg_y, dlg_width, dlg_height, COLOR_WHITE);
+
+    // Border
+    draw_rect(dlg_x, dlg_y, dlg_width, 2, COLOR_BLACK);
+    draw_rect(dlg_x, dlg_y + dlg_height - 2, dlg_width, 2, COLOR_BLACK);
+    draw_rect(dlg_x, dlg_y, 2, dlg_height, COLOR_BLACK);
+    draw_rect(dlg_x + dlg_width - 2, dlg_y, 2, dlg_height, COLOR_BLACK);
+
+    // Title
+    draw_text(dlg_x + 20, dlg_y + 20, "UPDATE AVAILABLE", COLOR_BLACK, 2);
+
+    // Version info
+    char version_text[64];
+    snprintf(version_text, sizeof(version_text), "Current: %s", KINDLEJAP_VERSION);
+    draw_text(dlg_x + 20, dlg_y + 50, version_text, COLOR_BLACK, 1);
+
+    snprintf(version_text, sizeof(version_text), "Latest:  %s", latest_version);
+    draw_text(dlg_x + 20, dlg_y + 65, version_text, COLOR_BLACK, 1);
+
+    // Update notes (simplified - show first line)
+    draw_text(dlg_x + 20, dlg_y + 90, "New version available!", COLOR_BLACK, 1);
+
+    // Yes button
+    int btn_w = 120;
+    int btn_h = 40;
+    int btn_y = dlg_y + dlg_height - 60;
+
+    draw_rect(dlg_x + 60, btn_y, btn_w, btn_h, COLOR_GRAY);
+    draw_text(dlg_x + 80, btn_y + 15, "UPDATE", COLOR_BLACK, 2);
+
+    // No button
+    draw_rect(dlg_x + 220, btn_y, btn_w, btn_h, COLOR_GRAY);
+    draw_text(dlg_x + 250, btn_y + 15, "CANCEL", COLOR_BLACK, 2);
+
+    // Store button coordinates for touch handling
+    menu_items[3].x = dlg_x + 60;
+    menu_items[3].y = btn_y;
+    menu_items[3].w = btn_w;
+    menu_items[3].h = btn_h;
+
+    menu_items[4].x = dlg_x + 220;
+    menu_items[4].y = btn_y;
+    menu_items[4].w = btn_w;
+    menu_items[4].h = btn_h;
+}
+
+void draw_update_progress(void) {
+    if (!update_downloading) return;
+
+    // Dialog box
+    int dlg_width = 400;
+    int dlg_height = 150;
+    int dlg_x = (screen_width - dlg_width) / 2;
+    int dlg_y = (screen_height - dlg_height) / 2;
+
+    // Background overlay
+    draw_rect(0, 0, screen_width, screen_height, COLOR_DARK);
+
+    // Dialog background
+    draw_rect(dlg_x, dlg_y, dlg_width, dlg_height, COLOR_WHITE);
+
+    // Border
+    draw_rect(dlg_x, dlg_y, dlg_width, 2, COLOR_BLACK);
+    draw_rect(dlg_x, dlg_y + dlg_height - 2, dlg_width, 2, COLOR_BLACK);
+    draw_rect(dlg_x, dlg_y, 2, dlg_height, COLOR_BLACK);
+    draw_rect(dlg_x + dlg_width - 2, dlg_y, 2, dlg_height, COLOR_BLACK);
+
+    // Title
+    draw_text(dlg_x + 20, dlg_y + 20, "UPDATING...", COLOR_BLACK, 2);
+
+    // Progress bar background
+    int bar_x = dlg_x + 20;
+    int bar_y = dlg_y + 70;
+    int bar_w = dlg_width - 40;
+    int bar_h = 20;
+
+    draw_rect(bar_x, bar_y, bar_w, bar_h, COLOR_LIGHT);
+
+    // Progress bar fill
+    if (update_progress > 0) {
+        int fill_w = (bar_w * update_progress) / 100;
+        draw_rect(bar_x, bar_y, fill_w, bar_h, COLOR_DARK);
+    }
+
+    // Progress text
+    char progress_text[32];
+    snprintf(progress_text, sizeof(progress_text), "%d%%", update_progress);
+    draw_text(dlg_x + 180, bar_y + 25, progress_text, COLOR_BLACK, 1);
+}
 
 void action_exit(void) {
     printf("Exiting KindleJap...\n");
@@ -386,6 +637,67 @@ void action_settings(void) {
     // TODO: Implement settings
 }
 
+void action_check_update(void) {
+    printf("Checking for updates...\n");
+    menu_expanded = 0;
+
+    // Show checking message
+    draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
+    draw_taskbar();
+    draw_text(100, screen_height / 2 - 20, "Checking for updates...", COLOR_BLACK, 2);
+    redraw_screen();
+
+    int result = check_for_updates();
+
+    if (result == 1) {
+        // Update available
+        show_update_dialog = 1;
+        update_available = 1;
+    } else if (result == 0) {
+        // Up to date
+        draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
+        draw_taskbar();
+        draw_text(100, screen_height / 2 - 20, "Already up to date!", COLOR_BLACK, 2);
+        redraw_screen();
+        sleep(2);
+    } else {
+        // Error
+        draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
+        draw_taskbar();
+        draw_text(100, screen_height / 2 - 20, "Check failed!", COLOR_BLACK, 2);
+        draw_text(100, screen_height / 2 + 10, "No internet connection?", COLOR_BLACK, 1);
+        redraw_screen();
+        sleep(2);
+    }
+
+    update_available = (result == 1) ? 1 : 0;
+    redraw_screen();
+}
+
+void action_update_now(void) {
+    printf("Starting update...\n");
+    menu_expanded = 0;
+    show_update_dialog = 0;
+    update_downloading = 1;
+    update_progress = 0;
+    redraw_screen();
+
+    // Run update in background thread
+    pthread_t update_thread;
+    pthread_create(&update_thread, NULL, (void* (*)(void*))download_and_update, NULL);
+    pthread_detach(update_thread);
+}
+
+void action_update_yes(void) {
+    action_update_now();
+}
+
+void action_update_no(void) {
+    show_update_dialog = 0;
+    update_available = 0;
+    redraw_screen();
+}
+
 void redraw_screen(void) {
     // Clear screen
     draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
@@ -395,6 +707,12 @@ void redraw_screen(void) {
 
     // Draw menu if expanded
     draw_menu();
+
+    // Draw update dialog if visible
+    draw_update_dialog();
+
+    // Draw update progress if downloading
+    draw_update_progress();
 }
 
 void handle_touch(int x, int y, int pressed) {
@@ -435,25 +753,52 @@ void handle_touch(int x, int y, int pressed) {
 
         // Detect tap on menu items
         if (menu_expanded) {
-            for (int i = 0; i < 3; i++) {
-                if (menu_items[i].active &&
-                    x >= menu_items[i].x && x <= menu_items[i].x + menu_items[i].w &&
-                    y >= menu_items[i].y && y <= menu_items[i].y + menu_items[i].h) {
-                    switch (i) {
-                        case 0:
-                            action_apps();
-                            break;
-                        case 1:
-                            action_settings();
-                            break;
-                        case 2:
-                            action_exit();
-                            break;
+            for (int i = 0; i < 5; i++) {
+                if (i < 3 || (i == 3 && show_update_dialog) || (i == 4 && show_update_dialog)) {
+                    if (menu_items[i].active &&
+                        x >= menu_items[i].x && x <= menu_items[i].x + menu_items[i].w &&
+                        y >= menu_items[i].y && y <= menu_items[i].y + menu_items[i].h) {
+                        switch (i) {
+                            case 0:
+                                action_apps();
+                                break;
+                            case 1:
+                                action_settings();
+                                break;
+                            case 2:
+                                action_exit();
+                                break;
+                            case 3:
+                                action_update_yes();
+                                break;
+                            case 4:
+                                action_update_no();
+                                break;
+                        }
+                        menu_expanded = 0;
+                        redraw_screen();
+                        return;
                     }
-                    menu_expanded = 0;
-                    redraw_screen();
-                    return;
                 }
+            }
+        }
+
+        // Detect tap on update dialog buttons
+        if (show_update_dialog) {
+            // Yes button
+            if (x >= menu_items[3].x && x <= menu_items[3].x + menu_items[3].w &&
+                y >= menu_items[3].y && y <= menu_items[3].y + menu_items[3].h) {
+                action_update_yes();
+                redraw_screen();
+                return;
+            }
+
+            // No button
+            if (x >= menu_items[4].x && x <= menu_items[4].x + menu_items[4].w &&
+                y >= menu_items[4].y && y <= menu_items[4].y + menu_items[4].h) {
+                action_update_no();
+                redraw_screen();
+                return;
             }
         }
     }
@@ -496,9 +841,16 @@ int main(int argc, char *argv[]) {
     menu_items[0].action = action_apps;
     menu_items[1].action = action_settings;
     menu_items[2].action = action_exit;
+    menu_items[3].action = action_update_yes;
+    menu_items[4].action = action_update_no;
 
     // Initial draw
     redraw_screen();
+
+    // Check for updates on startup (in background)
+    pthread_t update_check_thread;
+    pthread_create(&update_check_thread, NULL, (void* (*)(void*))check_for_updates, NULL);
+    pthread_detach(update_check_thread);
 
     printf("KindleJap Launcher running. Touch the bottom of screen or tap MENU button.\n");
 
