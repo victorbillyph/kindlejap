@@ -36,6 +36,10 @@ volatile int running = 1;
 volatile int menu_visible = 0;
 volatile int menu_expanded = 0;
 
+// Touch state
+int touch_last_x = 0;
+int touch_last_y = 0;
+
 // Update state
 volatile int show_update_dialog = 0;
 volatile int update_available = 0;
@@ -84,6 +88,7 @@ void action_check_update(void);
 void action_update_now(void);
 void action_update_yes(void);
 void action_update_no(void);
+void redraw_screen(void);
 void signal_handler(int sig);
 int check_for_updates(void);
 int compare_versions(const char *v1, const char *v2);
@@ -344,7 +349,6 @@ int check_for_updates(void) {
     char buffer[4096];
     char tag_name[32] = "";
     char body[1024] = "";
-    int in_tag = 0;
     int in_body = 0;
     int body_idx = 0;
 
@@ -415,7 +419,8 @@ int check_for_updates(void) {
     return -1; // Error parsing
 }
 
-int download_and_update(void) {
+void *download_and_update_thread(void *arg) {
+    (void)arg;
     printf("Starting update...\n");
     update_downloading = 1;
     update_progress = 0;
@@ -433,13 +438,13 @@ int download_and_update(void) {
         sleep(2);
         // Restart the app
         execl(UPDATE_SCRIPT, UPDATE_SCRIPT, "restart", NULL);
-        return 0;
+        return NULL;
     } else {
         printf("Update failed!\n");
         update_progress = -1;
         redraw_screen();
         sleep(2);
-        return -1;
+        return NULL;
     }
 }
 
@@ -520,6 +525,8 @@ void draw_menu(void) {
     menu_items[2].h = item_height;
     menu_items[2].active = 1;
 }
+
+void draw_update_dialog(void) {
     if (!show_update_dialog) return;
 
     // Dialog box
@@ -637,6 +644,17 @@ void action_settings(void) {
     // TODO: Implement settings
 }
 
+void *check_updates_thread(void *arg) {
+    (void)arg;
+    int result = check_for_updates();
+    if (result == 1) {
+        show_update_dialog = 1;
+        update_available = 1;
+        redraw_screen();
+    }
+    return NULL;
+}
+
 void action_check_update(void) {
     printf("Checking for updates...\n");
     menu_expanded = 0;
@@ -684,7 +702,7 @@ void action_update_now(void) {
 
     // Run update in background thread
     pthread_t update_thread;
-    pthread_create(&update_thread, NULL, (void* (*)(void*))download_and_update, NULL);
+    pthread_create(&update_thread, NULL, download_and_update_thread, NULL);
     pthread_detach(update_thread);
 }
 
@@ -809,24 +827,25 @@ void process_input(void) {
 
     while (read(input_fd, &ev, sizeof(ev)) > 0) {
         if (ev.type == EV_ABS) {
-            static int last_x = 0, last_y = 0;
-
             if (ev.code == ABS_MT_POSITION_X) {
-                last_x = ev.value;
+                touch_last_x = ev.value;
             } else if (ev.code == ABS_MT_POSITION_Y) {
-                last_y = ev.value;
+                touch_last_y = ev.value;
             }
         } else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
-            handle_touch(0, 0, ev.value);
+            handle_touch(touch_last_x, touch_last_y, ev.value);
         }
     }
 }
 
 void signal_handler(int sig) {
+    (void)sig;
     running = 0;
 }
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     printf("KindleJap Launcher starting...\n");
 
     // Set up signal handlers
@@ -849,7 +868,7 @@ int main(int argc, char *argv[]) {
 
     // Check for updates on startup (in background)
     pthread_t update_check_thread;
-    pthread_create(&update_check_thread, NULL, (void* (*)(void*))check_for_updates, NULL);
+    pthread_create(&update_check_thread, NULL, check_updates_thread, NULL);
     pthread_detach(update_check_thread);
 
     printf("KindleJap Launcher running. Touch the bottom of screen or tap MENU button.\n");
