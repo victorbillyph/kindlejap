@@ -1,0 +1,52 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabi
+
+      - name: Build for Kindle (ARM)
+        run: |
+          mkdir -p bin
+          arm-linux-gnueabi-gcc -O2 -Wall -Wextra -static -o bin/kindlejap-bin src/kindlejap.c -lpthread
+          arm-linux-gnueabi-strip bin/kindlejap-bin
+          chmod +x bin/kindlejap-bin
+          chmod +x bin/kindlejap.sh
+          chmod +x bin/update.sh
+
+      - name: Create release package
+        run: |
+          mkdir -p release
+          cp bin/kindlejap-bin release/
+          cp bin/kindlejap.sh release/
+          cp bin/update.sh release/
+          cp extension.json release/
+          cp Makefile release/
+          cp README.md release/
+          cp LICENSE release/
+          cp CHANGELOG.md release/
+          cd release
+          tar -czf ../kindlejap-${GITHUB_REF_NAME}.tar.gz *
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: kindlejap-${{ github.ref_name }}.tar.gz
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
