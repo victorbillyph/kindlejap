@@ -2,6 +2,13 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.5.0] - 2026-08-20
+
+### Changed
+- Kindle UI now pauses (SIGSTOP) instead of being killed on startup
+- Kindle UI resumes (SIGCONT) on exit — returns to exact state it was in
+- Falls back to initctl stop if PID can't be found
+
 ## [2.4.0] - 2026-08-20
 
 ### Added

@@ -16,7 +16,7 @@
 #include <math.h>
 #include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "2.4.0"
+#define KINDLEJAP_VERSION "2.5.0"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -120,6 +120,7 @@ volatile int running = 1;
 int lock_fd = -1;
 static int dirty = 1;
 static int downbar_visible = 0;
+static pid_t kindle_gui_pid = -1;
 
 struct mxcfb_rect { uint32_t top, left, width, height; };
 struct mxcfb_alt_buffer_data { uint32_t phys_addr, width, height; struct mxcfb_rect alt_update_region; };
@@ -194,7 +195,13 @@ int acquire_lock(void) {
 void release_lock(void) { if (lock_fd >= 0) { close(lock_fd); lock_fd = -1; } unlink(LOCKFILE); }
 
 void restore_kindle_ui(void) {
-    system("initctl start lab126_gui 2>/dev/null");
+    if (kindle_gui_pid > 0) {
+        char cmd[64]; snprintf(cmd, sizeof(cmd), "kill -CONT %d 2>/dev/null", kindle_gui_pid);
+        system(cmd);
+        log_msg("Resumed Kindle UI");
+    } else {
+        system("initctl start lab126_gui 2>/dev/null");
+    }
     system("initctl start otaupd 2>/dev/null");
     system("initctl start phd 2>/dev/null");
     system("initctl start tmd 2>/dev/null");
@@ -1392,7 +1399,19 @@ int main(void) {
     log_msg("KindleJap v" KINDLEJAP_VERSION " starting...");
     if (acquire_lock() < 0) { log_msg("Another instance running"); return 1; }
     log_msg("Lock acquired");
-    system("initctl stop lab126_gui 2>/dev/null");
+    FILE *pf = popen("pidof lab126_gui", "r");
+    if (pf) {
+        if (fscanf(pf, "%d", &kindle_gui_pid) == 1 && kindle_gui_pid > 0) {
+            char cmd[64]; snprintf(cmd, sizeof(cmd), "kill -STOP %d 2>/dev/null", kindle_gui_pid);
+            system(cmd);
+            log_msg("Paused Kindle UI");
+        }
+        pclose(pf);
+    }
+    if (kindle_gui_pid <= 0) {
+        system("initctl stop lab126_gui 2>/dev/null");
+        log_msg("Stopped Kindle UI (fallback)");
+    }
     system("initctl stop otaupd 2>/dev/null");
     system("initctl stop phd 2>/dev/null");
     system("initctl stop tmd 2>/dev/null");
