@@ -693,7 +693,6 @@ void *download_and_update_thread(void *arg) {
         update_progress = 100;
         redraw_screen();
         sleep(2);
-        restore_kindle_ui();
         execl(UPDATE_SCRIPT, UPDATE_SCRIPT, "restart", NULL);
     } else {
         printf("Update failed!\n");
@@ -848,9 +847,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    show_splash_init();
-
     init_framebuffer();
+
+    show_splash_init();
 
     draw_text(50, 210, "[OK] Framebuffer ready", COLOR_BLACK, 1);
     draw_text(50, 240, "Testing input devices...", COLOR_DARK, 1);
@@ -890,7 +889,6 @@ int main(int argc, char *argv[]) {
     }
 
     cleanup();
-    restore_kindle_ui();
 
     printf("KindleJap exited.\n");
     return 0;
