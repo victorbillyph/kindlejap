@@ -285,6 +285,16 @@ static int read_wifi(void) {
     return (buf[0] == 'u') ? 1 : 0;
 }
 
+static int battery_percent(void) {
+    char buf[8] = {0};
+    FILE *f = fopen("/sys/class/power_supply/battery/capacity", "r");
+    if (!f) f = fopen("/sys/class/power_supply/BAT0/capacity", "r");
+    if (!f) return 0;
+    int r = fread(buf, 1, 7, f); fclose(f);
+    (void)r;
+    return atoi(buf);
+}
+
 void draw_pixel(int x, int y, unsigned char c) {
     if (x<0||x>=screen_width||y<0||y>=screen_height) return;
     int off = y*finfo.line_length+x*bytes_per_pixel;
@@ -1733,7 +1743,6 @@ static void browser_draw(int x, int y, int w, int h) {
     unsigned char url_color = browser_input_active ? COLOR_BLACK : COLOR_DARK;
     draw_text(x+18, y+16, browser_url, url_color, 1);
     if (browser_input_active) {
-        int cw = text_width("_", 1);
         int ux = x + 18 + text_width(browser_url, 1);
         draw_text(ux, y+16, "_", COLOR_BLACK, 1);
     }
@@ -2056,7 +2065,7 @@ static void setup_init_tutorial(void) {
 
 static void setup_draw_topbar(int tutorial) {
     draw_rect(0, 0, screen_width, TOPBAR_H, COLOR_BLACK);
-    draw_text(16, 10, wifi ? "WiFi" : "---", COLOR_WHITE, 2);
+    draw_text(16, 10, read_wifi() ? "WiFi" : "---", COLOR_WHITE, 2);
     char bstr[16];
     int batt = battery_percent();
     snprintf(bstr, sizeof(bstr), "%d%%", batt);
@@ -2220,8 +2229,7 @@ static void setup_handle(int tx, int ty, int released) {
             setup_init_tutorial();
             dirty = 1;
         }
-    } else if (setup_step == 1) {
-        int left_active = 1;
+    } else     if (setup_step == 1) {
         int right_x = screen_width - btn_w - 20;
         if (point_in_rect(tx, ty, right_x, btn_y, btn_w, btn_h)) {
             if (setup_tutorial_step < TUTORIAL_STEPS - 1) {
