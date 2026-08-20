@@ -14,15 +14,25 @@ A custom launcher for Kindle devices, launched via KUAL (Kindle Unified Applicat
 ## Installation
 
 1. Install KUAL on your Kindle device
-2. Copy the entire `japlat` folder to `/mnt/us/extensions/japlat/` on your Kindle
-3. Restart KUAL or refresh extensions
-4. Launch "KindleJap" from the KUAL menu
+2. Download the latest release from [GitHub Releases](https://github.com/victorbillyph/kindlejap/releases)
+3. Extract the `japlat` folder to `/mnt/us/extensions/` on your Kindle
+4. The structure should be: `/mnt/us/extensions/japlat/config.xml`
+5. Restart KUAL or refresh extensions
+6. Launch "KindleJap" from the KUAL menu
+
+### Manual Installation
+
+If you prefer to build from source:
+
+1. Clone this repository
+2. Run `make` to cross-compile for ARM
+3. Copy the entire `japlat` folder to `/mnt/us/extensions/` on your Kindle
 
 ## Building
 
 ### Prerequisites
 
-- ARM cross-compiler (arm-linux-gnueabi-gcc)
+- ARM cross-compiler (`arm-linux-gnueabi-gcc`)
 - Make
 
 ### Build Commands
@@ -30,9 +40,6 @@ A custom launcher for Kindle devices, launched via KUAL (Kindle Unified Applicat
 ```bash
 # Build for Kindle (ARM)
 make
-
-# Build for development (x86 Linux)
-make dev
 
 # Clean build artifacts
 make clean
@@ -63,17 +70,17 @@ You can also manually check for updates from the menu.
 
 ```
 japlat/
-├── bin/                    # Compiled binaries and scripts
-│   ├── kindlejap-bin      # Main executable
-│   ├── kindlejap.sh       # KUAL launch script
-│   └── update.sh          # Update script
+├── config.xml              # KUAL extension manifest
+├── menu.json               # KUAL menu definition
+├── bin/
+│   ├── kindlejap-bin       # Main executable (ARM)
+│   ├── kindlejap.sh        # KUAL launch script
+│   └── update.sh           # Update script
 ├── src/
-│   └── kindlejap.c        # Main application source
-├── lib/                    # Libraries (if needed)
-├── extension.json         # KUAL extension configuration
-├── Makefile               # Build system
-├── CHANGELOG.md           # Version history
-└── README.md              # This file
+│   └── kindlejap.c         # Main application source
+├── Makefile                # Build system
+├── CHANGELOG.md            # Version history
+└── README.md               # This file
 ```
 
 ## Technical Details
@@ -92,6 +99,7 @@ japlat/
 - [x] Auto-update system
 - [x] Check for updates on startup
 - [x] Update dialog with user confirmation
+- [x] Proper KUAL integration (config.xml + menu.json)
 - [ ] Apps launcher functionality
 - [ ] Settings persistence
 - [ ] App icons and better typography

@@ -27,20 +27,21 @@ jobs:
           arm-linux-gnueabi-gcc -O2 -Wall -Wextra -static -o bin/kindlejap-bin src/kindlejap.c -lpthread
           arm-linux-gnueabi-strip bin/kindlejap-bin
           chmod +x bin/kindlejap-bin
-          chmod +x bin/japlat.sh
+          chmod +x bin/kindlejap.sh
           chmod +x bin/update.sh
 
       - name: Create release package
         run: |
-          mkdir -p release
-          cp bin/kindlejap-bin release/
-          cp bin/japlat.sh release/kindlejap.sh
-          cp bin/update.sh release/
-          cp extension.json release/
-          cp Makefile release/
-          cp README.md release/
-          cp LICENSE release/
-          cp CHANGELOG.md release/
+          mkdir -p release/japlat/bin
+          cp bin/kindlejap-bin release/japlat/bin/
+          cp bin/kindlejap.sh release/japlat/bin/
+          cp bin/update.sh release/japlat/bin/
+          cp config.xml release/japlat/
+          cp menu.json release/japlat/
+          cp Makefile release/japlat/
+          cp README.md release/japlat/
+          cp LICENSE release/japlat/
+          cp CHANGELOG.md release/japlat/
           cd release
           tar -czf ../kindlejap-${GITHUB_REF_NAME}.tar.gz *
 

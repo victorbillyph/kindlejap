@@ -2,8 +2,9 @@
 # KindleJap - KUAL Extension Entry Point
 # This script is called by KUAL to start the launcher
 
-SCRIPT_DIR="$(dirname "$0")"
-cd "$SCRIPT_DIR"
+# Get the extension directory
+EXTDIR="$(dirname "$0")/.."
+cd "$EXTDIR"
 
 # Stop Kindle UI services to take over the screen
 /usr/bin/lipc-set-prop com.lab126.winbroker appSwitcherDisable true 2>/dev/null

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<extension>
+    <information>
+        <name>KindleJap</name>
+        <version>1.1.0</version>
+        <author>victorbillyph</author>
+        <id>japlat</id>
+    </information>
+    <menus>
+        <menu type="json" dynamic="true">
+            menu.json
+        </menu>
+    </menus>
+</extension>
