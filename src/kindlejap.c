@@ -17,25 +17,34 @@
 #include <stdint.h>
 #include <sys/mman.h>
 
-#define KINDLEJAP_VERSION "1.2.5"
+#define KINDLEJAP_VERSION "1.2.6"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
 #define LOGFILE "/mnt/us/kindlejap.log"
+#define LOGFILE2 "/tmp/kindlejap_app.log"
 
+static int log_fd = -1;
 static FILE *logfp = NULL;
 static int log_initialized = 0;
 
 void log_msg(const char *msg) {
+    if (log_fd < 0) {
+        log_fd = open(LOGFILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    }
+    if (log_fd >= 0) {
+        write(log_fd, msg, strlen(msg));
+        write(log_fd, "\n", 1);
+        fsync(log_fd);
+    }
     if (!logfp) {
-        logfp = fopen(LOGFILE, "w");
+        logfp = fopen(LOGFILE, "a");
         log_initialized = 1;
     }
     if (logfp) {
         fprintf(logfp, "%s\n", msg);
         fflush(logfp);
     }
-    printf("%s\n", msg);
 }
 
 struct fb_var_screeninfo vinfo;
@@ -112,21 +121,65 @@ struct mxcfb_rect {
     uint32_t height;
 };
 
+struct mxcfb_alt_buffer_data {
+    uint32_t phys_addr;
+    uint32_t width;
+    uint32_t height;
+    struct mxcfb_rect alt_update_region;
+};
+
 struct mxcfb_update_data {
+    struct mxcfb_rect update_region;
+    uint32_t waveform_mode;
+    uint32_t update_mode;
+    uint32_t update_marker;
+    uint32_t hist_bw_waveform_mode;
+    uint32_t hist_gray_waveform_mode;
+    int temp;
+    unsigned int flags;
+    struct mxcfb_alt_buffer_data alt_buffer_data;
+};
+
+struct mxcfb_update_data_zelda {
     struct mxcfb_rect update_region;
     uint32_t waveform_mode;
     uint32_t update_mode;
     uint32_t update_marker;
     int temp;
     unsigned int flags;
+    int dither_mode;
+    int quant_bit;
+    struct mxcfb_alt_buffer_data alt_buffer_data;
+    uint32_t hist_bw_waveform_mode;
+    uint32_t hist_gray_waveform_mode;
+    uint32_t ts_pxp;
+    uint32_t ts_epdc;
 };
 
-#define MXCFB_SEND_UPDATE _IOW('F', 0x2E, struct mxcfb_update_data)
-#define MXCFB_WAIT_FOR_UPDATE _IOW('F', 0x2F, uint32_t)
-#define WAVEFORM_MODE_GC16 2
-#define WAVEFORM_MODE_GC4 0
-#define UPDATE_MODE_PARTIAL 0
-#define UPDATE_MODE_FULL 1
+struct mxcfb_update_marker_data {
+    uint32_t update_marker;
+    uint32_t collision_test;
+};
+
+#define MXCFB_SEND_UPDATE_K51     1078478382
+#define MXCFB_SEND_UPDATE_ZELDA   1079526958
+#define MXCFB_WAIT_COMPLETE_CARTA 3221767727
+#define MXCFB_WAIT_COMPLETE_PEARL 1074021935
+#define MXCFB_WAIT_SUBMISSION     1074021943
+
+#define WFM_INIT     0
+#define WFM_DU       1
+#define WFM_GC16     2
+#define WFM_GC16_FAST 3
+#define WFM_A2       4
+#define WFM_GL16     5
+#define WFM_REAGL    8
+
+#define UPD_PARTIAL 0
+#define UPD_FULL    1
+
+#define TEMP_USE_AMBIENT 4096
+#define TEMP_USE_AUTO    4097
 
 static const unsigned char font5x7[][7] = {
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
@@ -195,51 +248,146 @@ static const unsigned char font5x7[][7] = {
     {0x1C, 0x22, 0x22, 0x1E, 0x02, 0x04, 0x18},
 };
 
-void refresh_screen(void) {
-    if (fb_fd < 0) return;
-    msync(fb_mem, screen_height * finfo.line_length, MS_SYNC);
-    struct mxcfb_update_data data;
-    memset(&data, 0, sizeof(data));
-    data.update_region.top = 0;
-    data.update_region.left = 0;
-    data.update_region.width = screen_width;
-    data.update_region.height = screen_height;
-    data.waveform_mode = WAVEFORM_MODE_GC16;
-    data.update_mode = UPDATE_MODE_FULL;
-    data.update_marker = 1;
-    data.temp = 0x1001;
-    data.flags = 0;
-    int ret = ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
+static uint32_t refresh_marker = 0;
+static int mxcfb_mode = 0;
+
+static int do_refresh(int full, int wfm) {
+    if (fb_fd < 0) return -1;
+
+    refresh_marker++;
+    if (refresh_marker > 0xFFFFFFFF) refresh_marker = 1;
+
     char buf[128];
-    snprintf(buf, sizeof(buf), "refresh_screen: SEND_UPDATE ret=%d errno=%d", ret, errno);
-    log_msg(buf);
-    uint32_t marker = 1;
-    ret = ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
-    snprintf(buf, sizeof(buf), "refresh_screen: WAIT_UPDATE ret=%d errno=%d", ret, errno);
-    log_msg(buf);
+
+    if (mxcfb_mode == 0 || mxcfb_mode == 1) {
+        struct mxcfb_update_data data;
+        memset(&data, 0, sizeof(data));
+        data.update_region.top = 0;
+        data.update_region.left = 0;
+        data.update_region.width = screen_width;
+        data.update_region.height = screen_height;
+        data.waveform_mode = wfm;
+        data.update_mode = full ? UPD_FULL : UPD_PARTIAL;
+        data.update_marker = refresh_marker;
+        data.hist_bw_waveform_mode = WFM_DU;
+        data.hist_gray_waveform_mode = full ? WFM_GC16 : WFM_GC16_FAST;
+        data.temp = TEMP_USE_AUTO;
+        data.flags = 0;
+
+        int ret = ioctl(fb_fd, MXCFB_SEND_UPDATE_K51, &data);
+        snprintf(buf, sizeof(buf), "refresh: K51 SEND ret=%d errno=%d sizeof=%zu", ret, (int)errno, sizeof(data));
+        log_msg(buf);
+
+        if (ret == 0) {
+            mxcfb_mode = 1;
+            struct mxcfb_update_marker_data md;
+            md.update_marker = refresh_marker;
+            md.collision_test = 0;
+            ret = ioctl(fb_fd, MXCFB_WAIT_COMPLETE_CARTA, &md);
+            snprintf(buf, sizeof(buf), "refresh: CARTA WAIT ret=%d errno=%d", ret, (int)errno);
+            log_msg(buf);
+            return 0;
+        }
+
+        struct mxcfb_update_data_zelda data_z;
+        memset(&data_z, 0, sizeof(data_z));
+        data_z.update_region.top = 0;
+        data_z.update_region.left = 0;
+        data_z.update_region.width = screen_width;
+        data_z.update_region.height = screen_height;
+        data_z.waveform_mode = wfm;
+        data_z.update_mode = full ? UPD_FULL : UPD_PARTIAL;
+        data_z.update_marker = refresh_marker;
+        data_z.temp = TEMP_USE_AMBIENT;
+        data_z.flags = 0;
+        data_z.dither_mode = 0;
+        data_z.quant_bit = 0;
+        data_z.hist_bw_waveform_mode = WFM_DU;
+        data_z.hist_gray_waveform_mode = full ? WFM_GC16 : WFM_GC16_FAST;
+
+        ret = ioctl(fb_fd, MXCFB_SEND_UPDATE_ZELDA, &data_z);
+        snprintf(buf, sizeof(buf), "refresh: ZELDA SEND ret=%d errno=%d sizeof=%zu", ret, (int)errno, sizeof(data_z));
+        log_msg(buf);
+
+        if (ret == 0) {
+            mxcfb_mode = 2;
+            struct mxcfb_update_marker_data md;
+            md.update_marker = refresh_marker;
+            md.collision_test = 0;
+            ret = ioctl(fb_fd, MXCFB_WAIT_COMPLETE_CARTA, &md);
+            snprintf(buf, sizeof(buf), "refresh: CARTA WAIT ret=%d errno=%d", ret, (int)errno);
+            log_msg(buf);
+            return 0;
+        }
+
+        snprintf(buf, sizeof(buf), "refresh: BOTH modes failed, trying PEARL wait");
+        log_msg(buf);
+    }
+
+    if (mxcfb_mode == 1) {
+        struct mxcfb_update_data data;
+        memset(&data, 0, sizeof(data));
+        data.update_region.top = 0;
+        data.update_region.left = 0;
+        data.update_region.width = screen_width;
+        data.update_region.height = screen_height;
+        data.waveform_mode = wfm;
+        data.update_mode = full ? UPD_FULL : UPD_PARTIAL;
+        data.update_marker = refresh_marker;
+        data.hist_bw_waveform_mode = WFM_DU;
+        data.hist_gray_waveform_mode = full ? WFM_GC16 : WFM_GC16_FAST;
+        data.temp = TEMP_USE_AUTO;
+        data.flags = 0;
+
+        int ret = ioctl(fb_fd, MXCFB_SEND_UPDATE_K51, &data);
+        if (ret == 0) {
+            uint32_t mk = refresh_marker;
+            ret = ioctl(fb_fd, MXCFB_WAIT_COMPLETE_PEARL, &mk);
+            snprintf(buf, sizeof(buf), "refresh: PEARL WAIT ret=%d errno=%d", ret, (int)errno);
+            log_msg(buf);
+            return 0;
+        }
+    }
+
+    if (mxcfb_mode == 2) {
+        struct mxcfb_update_data_zelda data_z;
+        memset(&data_z, 0, sizeof(data_z));
+        data_z.update_region.top = 0;
+        data_z.update_region.left = 0;
+        data_z.update_region.width = screen_width;
+        data_z.update_region.height = screen_height;
+        data_z.waveform_mode = wfm;
+        data_z.update_mode = full ? UPD_FULL : UPD_PARTIAL;
+        data_z.update_marker = refresh_marker;
+        data_z.temp = TEMP_USE_AMBIENT;
+        data_z.flags = 0;
+        data_z.dither_mode = 0;
+        data_z.quant_bit = 0;
+
+        int ret = ioctl(fb_fd, MXCFB_SEND_UPDATE_ZELDA, &data_z);
+        if (ret == 0) {
+            uint32_t mk = refresh_marker;
+            ret = ioctl(fb_fd, MXCFB_WAIT_COMPLETE_PEARL, &mk);
+            snprintf(buf, sizeof(buf), "refresh: PEARL WAIT ret=%d errno=%d", ret, (int)errno);
+            log_msg(buf);
+            return 0;
+        }
+    }
+
+    log_msg("refresh: ALL methods failed");
+    return -1;
+}
+
+void refresh_screen(void) {
+    log_msg("refresh_screen: enter");
+    do_refresh(1, WFM_GC16);
+    log_msg("refresh_screen: exit");
 }
 
 void refresh_screen_partial(void) {
-    if (fb_fd < 0) return;
-    struct mxcfb_update_data data;
-    memset(&data, 0, sizeof(data));
-    data.update_region.top = 0;
-    data.update_region.left = 0;
-    data.update_region.width = screen_width;
-    data.update_region.height = screen_height;
-    data.waveform_mode = WAVEFORM_MODE_GC4;
-    data.update_mode = UPDATE_MODE_PARTIAL;
-    data.update_marker = 2;
-    data.temp = 0x1001;
-    data.flags = 0;
-    int ret = ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
-    char buf[128];
-    snprintf(buf, sizeof(buf), "refresh_partial: SEND_UPDATE ret=%d errno=%d", ret, errno);
-    log_msg(buf);
-    uint32_t marker = 2;
-    ret = ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
-    snprintf(buf, sizeof(buf), "refresh_partial: WAIT_UPDATE ret=%d errno=%d", ret, errno);
-    log_msg(buf);
+    log_msg("refresh_partial: enter");
+    do_refresh(0, WFM_GC16_FAST);
+    log_msg("refresh_partial: exit");
 }
 
 int acquire_lock(void) {
