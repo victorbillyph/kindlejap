@@ -2,6 +2,27 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [3.0.0] - 2026-08-20
+
+### Added
+- Complete browser rewrite with full HTML support
+- **Inline styles**: `<b>`, `<strong>`, `<i>`, `<em>`, `<u>`, `<s>`, `<del>`, `<font color>`, `<span style>`
+- **Headings**: h1-h6 rendered at appropriate scales (3x, 2x, 1x) with bold
+- **Tables**: `<table>`, `<tr>`, `<td>`, `<th>` rendered with borders and rows
+- **Forms**: `<input type="text">`, `<input type="submit">`, `<button>` with tap interaction
+- **Images**: `<img alt="...">` shown as placeholder with alt text
+- **Lists**: `<ul>` with bullet points, `<ol>` with numbered items
+- **Blockquotes**: `<blockquote>` with left border indicator
+- **Preformatted text**: `<pre>` with monospace-style background
+- **Smart word-wrap**: breaks at word boundaries instead of mid-word
+- **Scroll indicator**: visual scroll bar on right edge
+- **HTML entities**: 30+ entities including arrows, quotes, currency, copyright
+- **Numeric entities**: `&#123;` and `&#x1B;` support
+- **Inline CSS**: `color`, `font-weight`, `font-style`, `text-decoration` via `<span style>`
+- **Style state tracking**: bold/italic/underline/color inherit through nested tags
+- **Tab handling**: tabs converted to spaces
+- **Better URL bar**: shows cursor when active, visual feedback
+
 ## [2.6.2] - 2026-08-20
 
 ### Improved

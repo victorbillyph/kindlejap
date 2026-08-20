@@ -16,7 +16,7 @@
 #include <math.h>
 #include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "2.6.2"
+#define KINDLEJAP_VERSION "3.0.0"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -1085,16 +1085,28 @@ static int browser_input_active = 0;
 static int browser_loading = 0;
 static int browser_scroll = 0;
 
-#define BROWSER_MAX_LINES 500
-#define BROWSER_MAX_LINKS 64
+#define BROWSER_MAX_LINES 600
+#define BROWSER_MAX_LINKS 80
+#define BROWSER_MAX_TABLES 20
 #define BROWSER_CACHE "/tmp/kindlejap_browser_cache.html"
+#define BROWSER_TEXT_W (screen_width - 20)
 
-typedef enum { LINE_TEXT, LINE_H1, LINE_H2, LINE_H3, LINE_PARA, LINE_LIST, LINE_LINK, LINE_HR, LINE_PRE } LineType;
+typedef enum {
+    LINE_TEXT, LINE_H1, LINE_H2, LINE_H3, LINE_H4, LINE_H5, LINE_H6,
+    LINE_PARA, LINE_LIST_ITEM, LINE_LINK, LINE_HR, LINE_PRE,
+    LINE_BLOCKQUOTE, LINE_TABLE_ROW, LINE_IMAGE, LINE_FORM_INPUT, LINE_FORM_BUTTON,
+    LINE_OL_ITEM
+} LineType;
 
 typedef struct {
     char *text;
     LineType type;
     int link_idx;
+    unsigned char color;
+    int bold;
+    int italic;
+    int underline;
+    int font_scale;
 } BrowserLine;
 
 static BrowserLine browser_lines[BROWSER_MAX_LINES];
@@ -1109,20 +1121,56 @@ typedef struct {
 static BrowserLink browser_links[BROWSER_MAX_LINKS];
 static int browser_link_count = 0;
 
+typedef struct {
+    char cells[8][256];
+    int col_count;
+    int row_line;
+} BrowserTableRow;
+
+typedef struct {
+    BrowserTableRow rows[32];
+    int row_count;
+} BrowserTable;
+
+static BrowserTable browser_tables[BROWSER_MAX_TABLES];
+static int browser_table_count = 0;
+
+typedef struct {
+    char name[128];
+    char value[256];
+    char placeholder[128];
+    int line;
+    int active;
+} BrowserFormField;
+
+#define BROWSER_MAX_FORM_FIELDS 16
+static BrowserFormField browser_fields[BROWSER_MAX_FORM_FIELDS];
+static int browser_field_count = 0;
+static int browser_active_field = -1;
+
 static void browser_free_content(void) {
     for (int i = 0; i < browser_line_count; i++)
         if (browser_lines[i].text) { free(browser_lines[i].text); browser_lines[i].text = NULL; }
     browser_line_count = 0;
     browser_link_count = 0;
+    browser_table_count = 0;
+    browser_field_count = 0;
+    browser_active_field = -1;
     browser_scroll = 0;
 }
 
-static void browser_emit(LineType type, const char *text) {
-    if (browser_line_count >= BROWSER_MAX_LINES || !text || strlen(text) == 0) return;
+static int browser_emit(LineType type, const char *text, unsigned char color, int bold, int italic, int underline, int font_scale) {
+    if (browser_line_count >= BROWSER_MAX_LINES || !text) return -1;
+    if (strlen(text) == 0 && type != LINE_HR && type != LINE_PARA && type != LINE_IMAGE) return -1;
     browser_lines[browser_line_count].text = strdup(text);
     browser_lines[browser_line_count].type = type;
     browser_lines[browser_line_count].link_idx = -1;
-    browser_line_count++;
+    browser_lines[browser_line_count].color = color;
+    browser_lines[browser_line_count].bold = bold;
+    browser_lines[browser_line_count].italic = italic;
+    browser_lines[browser_line_count].underline = underline;
+    browser_lines[browser_line_count].font_scale = font_scale;
+    return browser_line_count++;
 }
 
 static void browser_emit_empty(void) {
@@ -1130,21 +1178,81 @@ static void browser_emit_empty(void) {
     browser_lines[browser_line_count].text = strdup("");
     browser_lines[browser_line_count].type = LINE_PARA;
     browser_lines[browser_line_count].link_idx = -1;
+    browser_lines[browser_line_count].color = COLOR_BLACK;
+    browser_lines[browser_line_count].bold = 0;
+    browser_lines[browser_line_count].italic = 0;
+    browser_lines[browser_line_count].underline = 0;
+    browser_lines[browser_line_count].font_scale = 1;
     browser_line_count++;
+}
+
+static int browser_max_chars(int scale) {
+    return BROWSER_TEXT_W / (FONT_W * scale);
+}
+
+static void browser_flush_text(char *buf, int *col, LineType forced_type, unsigned char color, int bold, int italic, int underline, int font_scale) {
+    if (*col <= 0) return;
+    buf[*col] = 0;
+    LineType lt = forced_type;
+    if (lt == LINE_TEXT && font_scale >= 3) lt = LINE_H1;
+    else if (lt == LINE_TEXT && font_scale >= 2) lt = LINE_H2;
+    browser_emit(lt, buf, color, bold, italic, underline, font_scale);
+    *col = 0;
 }
 
 static void browser_parse_html(const char *html) {
     browser_free_content();
-    char text_buf[1024] = "";
+    char text_buf[2048] = "";
     int tcol = 0;
     const char *p = html;
     int in_tag = 0;
     int skip_content = 0;
-    char tag_name[32] = "";
+    char tag_name[64] = "";
     int tag_len = 0;
+    char tag_attrs[512] = "";
+    int attr_len = 0;
+    int in_tag_attrs = 0;
 
-    char link_href[256] = "";
+    unsigned char cur_color = COLOR_BLACK;
+    int cur_bold = 0;
+    int cur_italic = 0;
+    int cur_underline = 0;
+    int cur_scale = 1;
     int link_active = 0;
+    int in_pre = 0;
+    int in_blockquote = 0;
+    int in_table = 0;
+    int in_tr = 0;
+    int in_td = 0;
+    int table_idx = -1;
+    int td_idx = 0;
+    char td_buf[256] = "";
+    int td_col = 0;
+    int ol_counter = 0;
+    int in_ul = 0;
+    int in_ol = 0;
+
+    #define FLUSH_TEXT() browser_flush_text(text_buf, &tcol, LINE_TEXT, cur_color, cur_bold, cur_italic, cur_underline, cur_scale)
+
+    #define PUSH_CHAR(c) do { \
+        int maxc = browser_max_chars(cur_scale); \
+        if (tcol < (int)sizeof(text_buf)-2) text_buf[tcol++] = (c); \
+        if (!in_pre && tcol >= maxc) { \
+            int last_sp = -1; \
+            for (int wi = tcol-1; wi > tcol-40 && wi >= 0; wi--) \
+                if (text_buf[wi] == ' ') { last_sp = wi; break; } \
+            if (last_sp > 0) { \
+                text_buf[last_sp] = 0; \
+                browser_emit(LINE_TEXT, text_buf, cur_color, cur_bold, cur_italic, cur_underline, cur_scale); \
+                int rem = tcol - last_sp - 1; \
+                memmove(text_buf, text_buf + last_sp + 1, rem); \
+                tcol = rem; \
+            } else { \
+                browser_emit(LINE_TEXT, text_buf, cur_color, cur_bold, cur_italic, cur_underline, cur_scale); \
+                tcol = 0; \
+            } \
+        } \
+    } while(0)
 
     while (*p && browser_line_count < BROWSER_MAX_LINES) {
         if (*p == '<') {
@@ -1155,53 +1263,184 @@ static void browser_parse_html(const char *html) {
                 }
             }
             in_tag = 1;
+            in_tag_attrs = 0;
             tag_len = 0;
+            attr_len = 0;
             tag_name[0] = 0;
+            tag_attrs[0] = 0;
             p++;
             continue;
         }
         if (*p == '>') {
             in_tag = 0;
             tag_name[tag_len] = 0;
-            /* trim to first word only */
-            char *sp = strchr(tag_name, ' ');
-            if (sp) { *sp = 0; tag_len = sp - tag_name; }
+            tag_attrs[attr_len] = 0;
 
-            if (tag_len > 0 && tag_name[0] != '/') {
-                int is_block = 0;
-                if (strncasecmp(tag_name, "p", 1) == 0 || strncasecmp(tag_name, "div", 3) == 0 ||
-                    strncasecmp(tag_name, "br", 2) == 0 || strncasecmp(tag_name, "li", 2) == 0 ||
-                    strncasecmp(tag_name, "tr", 2) == 0 || strncasecmp(tag_name, "hr", 2) == 0 ||
-                    strncasecmp(tag_name, "pre", 3) == 0) is_block = 1;
+            /* lowercase tag name */
+            for (int ci = 0; ci < tag_len; ci++)
+                if (tag_name[ci] >= 'A' && tag_name[ci] <= 'Z') tag_name[ci] += 32;
 
-                if (tcol > 0 && !skip_content && is_block) {
-                    text_buf[tcol] = 0;
-                    if (tcol > 0) {
-                        LineType lt = LINE_TEXT;
-                        if (link_active && browser_link_count < BROWSER_MAX_LINKS) {
-                            strncpy(browser_links[browser_link_count].label, text_buf, 127);
-                            lt = LINE_LINK;
-                            browser_lines[browser_line_count].link_idx = browser_link_count;
-                            browser_link_count++;
-                        }
-                        browser_emit(lt, text_buf);
+            int is_closing = (tag_name[0] == '/');
+            char *tname = is_closing ? tag_name + 1 : tag_name;
+
+            /* handle table cell content on td/th close */
+            if (in_td && is_closing && (strcmp(tname, "td") == 0 || strcmp(tname, "th") == 0)) {
+                td_buf[td_col] = 0;
+                if (table_idx >= 0 && table_idx < browser_table_count && in_tr) {
+                    BrowserTable *tb = &browser_tables[table_idx];
+                    if (tb->row_count > 0 && td_idx < 8) {
+                        strncpy(tb->rows[tb->row_count-1].cells[td_idx], td_buf, 255);
+                        td_idx++;
+                        tb->rows[tb->row_count-1].col_count = td_idx;
                     }
-                    tcol = 0;
+                }
+                td_col = 0;
+                in_td = 0;
+            }
+
+            /* handle tr close */
+            if (is_closing && strcmp(tname, "tr") == 0) {
+                in_tr = 0;
+            }
+
+            /* handle table close */
+            if (is_closing && strcmp(tname, "table") == 0) {
+                in_table = 0;
+            }
+
+            /* opening tags */
+            if (!is_closing) {
+                int is_block = (strcmp(tname, "p") == 0 || strcmp(tname, "div") == 0 ||
+                    strcmp(tname, "br") == 0 || strcmp(tname, "li") == 0 ||
+                    strcmp(tname, "tr") == 0 || strcmp(tname, "hr") == 0 ||
+                    strcmp(tname, "h1") == 0 || strcmp(tname, "h2") == 0 ||
+                    strcmp(tname, "h3") == 0 || strcmp(tname, "h4") == 0 ||
+                    strcmp(tname, "h5") == 0 || strcmp(tname, "h6") == 0 ||
+                    strcmp(tname, "pre") == 0 || strcmp(tname, "blockquote") == 0 ||
+                    strcmp(tname, "ul") == 0 || strcmp(tname, "ol") == 0 ||
+                    strcmp(tname, "table") == 0 || strcmp(tname, "td") == 0 ||
+                    strcmp(tname, "th") == 0 || strcmp(tname, "thead") == 0 ||
+                    strcmp(tname, "tbody") == 0);
+
+                if (tcol > 0 && !skip_content && is_block) FLUSH_TEXT();
+
+                if (strcmp(tname, "br") == 0) { FLUSH_TEXT(); tcol = 0; }
+                if (strcmp(tname, "hr") == 0) {
+                    FLUSH_TEXT();
+                    browser_emit(LINE_HR, "---", COLOR_MID, 0, 0, 0, 1);
                 }
 
-                if (strncasecmp(tag_name, "h1", 2) == 0 || strncasecmp(tag_name, "h2", 2) == 0 ||
-                    strncasecmp(tag_name, "h3", 2) == 0 || strncasecmp(tag_name, "h4", 2) == 0) {
-                    if (browser_line_count > 0) browser_emit_empty();
+                /* headings */
+                if (strcmp(tname, "h1") == 0) { if (browser_line_count > 0) browser_emit_empty(); cur_scale = 3; cur_bold = 1; }
+                else if (strcmp(tname, "h2") == 0) { if (browser_line_count > 0) browser_emit_empty(); cur_scale = 2; cur_bold = 1; }
+                else if (strcmp(tname, "h3") == 0 || strcmp(tname, "h4") == 0) { if (browser_line_count > 0) browser_emit_empty(); cur_scale = 2; cur_bold = 0; }
+                else if (strcmp(tname, "h5") == 0 || strcmp(tname, "h6") == 0) { cur_scale = 1; cur_bold = 1; }
+
+                /* pre */
+                if (strcmp(tname, "pre") == 0) { in_pre = 1; FLUSH_TEXT(); }
+
+                /* blockquote */
+                if (strcmp(tname, "blockquote") == 0) { in_blockquote = 1; FLUSH_TEXT(); }
+
+                /* lists */
+                if (strcmp(tname, "ul") == 0) { in_ul = 1; FLUSH_TEXT(); }
+                if (strcmp(tname, "ol") == 0) { in_ol = 1; ol_counter = 1; FLUSH_TEXT(); }
+                if (strcmp(tname, "li") == 0) {
+                    FLUSH_TEXT();
+                    if (in_ol) {
+                        char obuf[16];
+                        snprintf(obuf, sizeof(obuf), "%d. ", ol_counter++);
+                        for (const char *oi = obuf; *oi; oi++) PUSH_CHAR(*oi);
+                    } else if (in_ul) {
+                        PUSH_CHAR(0xe2); PUSH_CHAR(0x80); PUSH_CHAR(0xa2); PUSH_CHAR(' ');
+                    }
                 }
-                if (strncasecmp(tag_name, "li", 2) == 0) {
-                    if (tcol == 0 && !skip_content) { text_buf[tcol++] = '*'; text_buf[tcol++] = ' '; }
+
+                /* table */
+                if (strcmp(tname, "table") == 0) {
+                    FLUSH_TEXT();
+                    if (browser_table_count < BROWSER_MAX_TABLES) {
+                        table_idx = browser_table_count++;
+                        browser_tables[table_idx].row_count = 0;
+                        in_table = 1;
+                    }
                 }
-                if (strncasecmp(tag_name, "hr", 2) == 0) {
-                    if (tcol > 0) { text_buf[tcol] = 0; browser_emit(LINE_TEXT, text_buf); tcol = 0; }
-                    browser_emit(LINE_HR, "---");
+                if (strcmp(tname, "tr") == 0 && in_table) {
+                    in_tr = 1;
+                    td_idx = 0;
+                    if (table_idx >= 0 && browser_tables[table_idx].row_count < 32) {
+                        memset(&browser_tables[table_idx].rows[browser_tables[table_idx].row_count], 0, sizeof(BrowserTableRow));
+                        browser_tables[table_idx].rows[browser_tables[table_idx].row_count].row_line = browser_line_count;
+                        browser_tables[table_idx].row_count++;
+                    }
                 }
-                if (strncasecmp(tag_name, "a ", 2) == 0 && browser_link_count < BROWSER_MAX_LINKS) {
-                    const char *href = strstr(p - tag_len, "href=\"");
+                if ((strcmp(tname, "td") == 0 || strcmp(tname, "th") == 0) && in_table) {
+                    in_td = 1;
+                    td_col = 0;
+                }
+
+                /* img */
+                if (strcmp(tname, "img") == 0) {
+                    FLUSH_TEXT();
+                    const char *alt = strstr(tag_attrs, "alt=\"");
+                    char alt_buf[128] = "image";
+                    if (alt) {
+                        alt += 5;
+                        const char *end = strchr(alt, '"');
+                        if (end && (end - alt) > 0 && (end - alt) < 127) {
+                            int al = end - alt;
+                            strncpy(alt_buf, alt, al);
+                            alt_buf[al] = 0;
+                        }
+                    }
+                    char img_line[256];
+                    snprintf(img_line, sizeof(img_line), "[ %s ]", alt_buf);
+                    browser_emit(LINE_IMAGE, img_line, COLOR_MID, 0, 0, 0, 1);
+                }
+
+                /* form input */
+                if (strcmp(tname, "input") == 0) {
+                    FLUSH_TEXT();
+                    const char *tp = strstr(tag_attrs, "type=\"");
+                    const char *nm = strstr(tag_attrs, "name=\"");
+                    const char *pl = strstr(tag_attrs, "placeholder=\"");
+                    const char *vl = strstr(tag_attrs, "value=\"");
+                    char ftype[32] = "text";
+                    char fname[128] = "";
+                    char fph[128] = "";
+                    char fval[256] = "";
+                    if (tp) { tp += 6; const char *e = strchr(tp, '"'); if (e) { int l = e-tp; if (l<31) { strncpy(ftype, tp, l); ftype[l]=0; } } }
+                    if (nm) { nm += 6; const char *e = strchr(nm, '"'); if (e) { int l = e-nm; if (l<127) { strncpy(fname, nm, l); fname[l]=0; } } }
+                    if (pl) { pl += 13; const char *e = strchr(pl, '"'); if (e) { int l = e-pl; if (l<127) { strncpy(fph, pl, l); fph[l]=0; } } }
+                    if (vl) { vl += 7; const char *e = strchr(vl, '"'); if (e) { int l = e-vl; if (l<255) { strncpy(fval, vl, l); fval[l]=0; } } }
+                    if (strcmp(ftype, "submit") == 0 || strcmp(ftype, "button") == 0) {
+                        int li = browser_emit(LINE_FORM_BUTTON, strlen(fval) > 0 ? fval : "Submit", COLOR_BLACK, 0, 0, 0, 2);
+                        if (browser_field_count < BROWSER_MAX_FORM_FIELDS && li >= 0) {
+                            strncpy(browser_fields[browser_field_count].name, fname, 127);
+                            strncpy(browser_fields[browser_field_count].value, fval, 255);
+                            browser_fields[browser_field_count].line = li;
+                            browser_field_count++;
+                        }
+                    } else {
+                        char finp[512];
+                        snprintf(finp, sizeof(finp), "[%s]", strlen(fval) > 0 ? fval : (strlen(fph) > 0 ? fph : fname));
+                        int li = browser_emit(LINE_FORM_INPUT, finp, COLOR_DARK, 0, 0, 0, 1);
+                        if (browser_field_count < BROWSER_MAX_FORM_FIELDS && li >= 0) {
+                            strncpy(browser_fields[browser_field_count].name, fname, 127);
+                            strncpy(browser_fields[browser_field_count].value, fval, 255);
+                            strncpy(browser_fields[browser_field_count].placeholder, fph, 127);
+                            browser_fields[browser_field_count].line = li;
+                            browser_field_count++;
+                        }
+                    }
+                }
+
+                /* button */
+                if (strcmp(tname, "button") == 0) { FLUSH_TEXT(); }
+
+                /* link */
+                if (strcmp(tname, "a") == 0 && browser_link_count < BROWSER_MAX_LINKS) {
+                    const char *href = strstr(tag_attrs, "href=\"");
                     if (href) {
                         href += 6;
                         const char *end = strchr(href, '"');
@@ -1214,12 +1453,53 @@ static void browser_parse_html(const char *html) {
                         }
                     }
                 }
-                if (strncasecmp(tag_name, "style", 5) == 0 || strncasecmp(tag_name, "script", 6) == 0)
+
+                /* inline styles */
+                if (strcmp(tname, "b") == 0 || strcmp(tname, "strong") == 0) cur_bold = 1;
+                if (strcmp(tname, "i") == 0 || strcmp(tname, "em") == 0) cur_italic = 1;
+                if (strcmp(tname, "u") == 0) cur_underline = 1;
+                if (strcmp(tname, "s") == 0 || strcmp(tname, "del") == 0 || strcmp(tname, "strike") == 0) cur_underline = 1;
+
+                /* font color */
+                if (strcmp(tname, "font") == 0) {
+                    const char *clr = strstr(tag_attrs, "color=\"");
+                    if (clr) {
+                        clr += 7;
+                        if (strncasecmp(clr, "red", 3) == 0) cur_color = COLOR_DARK;
+                        else if (strncasecmp(clr, "blue", 4) == 0) cur_color = COLOR_DARK;
+                        else if (strncasecmp(clr, "gray", 4) == 0 || strncasecmp(clr, "grey", 4) == 0) cur_color = COLOR_MID;
+                        else if (strncasecmp(clr, "green", 5) == 0) cur_color = COLOR_DARK;
+                    }
+                }
+                if (strcmp(tname, "span") == 0) {
+                    const char *sty = strstr(tag_attrs, "style=\"");
+                    if (sty) {
+                        sty += 7;
+                        if (strstr(sty, "color:")) {
+                            const char *cv = strstr(sty, "color:");
+                            cv += 6;
+                            while (*cv == ' ') cv++;
+                            if (strncasecmp(cv, "red", 3) == 0) cur_color = COLOR_DARK;
+                            else if (strncasecmp(cv, "blue", 4) == 0) cur_color = COLOR_DARK;
+                            else if (strncasecmp(cv, "gray", 4) == 0 || strncasecmp(cv, "#888", 4) == 0 || strncasecmp(cv, "#999", 4) == 0) cur_color = COLOR_MID;
+                            else if (strncasecmp(cv, "#aaa", 4) == 0 || strncasecmp(cv, "#bbb", 4) == 0) cur_color = COLOR_MID;
+                        }
+                        if (strstr(sty, "font-weight: bold")) cur_bold = 1;
+                        if (strstr(sty, "font-style: italic")) cur_italic = 1;
+                        if (strstr(sty, "text-decoration: underline")) cur_underline = 1;
+                    }
+                }
+
+                /* skip style/script/noscript */
+                if (strcmp(tname, "style") == 0 || strcmp(tname, "script") == 0 || strcmp(tname, "noscript") == 0)
                     skip_content = 1;
+
+                /* title -> emit as h1 */
+                if (strcmp(tname, "title") == 0) { skip_content = 1; }
             }
 
-            if (tag_len > 0 && tag_name[0] == '/') {
-                char *closing = tag_name + 1;
+            /* closing tags */
+            if (is_closing) {
                 if (tcol > 0 && !skip_content) {
                     text_buf[tcol] = 0;
                     LineType lt = LINE_TEXT;
@@ -1230,54 +1510,131 @@ static void browser_parse_html(const char *html) {
                         browser_link_count++;
                         link_active = 0;
                     }
-                    if (strncasecmp(closing, "h1", 2) == 0) lt = LINE_H1;
-                    else if (strncasecmp(closing, "h2", 2) == 0) lt = LINE_H2;
-                    else if (strncasecmp(closing, "h3", 3) == 0) lt = LINE_H3;
-                    else if (strncasecmp(closing, "p", 1) == 0) lt = LINE_PARA;
-                    else if (strncasecmp(closing, "pre", 3) == 0) lt = LINE_PRE;
-                    else if (strncasecmp(closing, "li", 2) == 0) lt = LINE_LIST;
-                    browser_emit(lt, text_buf);
+                    if (strcmp(tname, "/h1") == 0) { lt = LINE_H1; cur_scale = 3; cur_bold = 1; }
+                    else if (strcmp(tname, "/h2") == 0) { lt = LINE_H2; cur_scale = 2; cur_bold = 1; }
+                    else if (strcmp(tname, "/h3") == 0 || strcmp(tname, "/h4") == 0) { lt = LINE_H3; cur_scale = 2; }
+                    else if (strcmp(tname, "/h5") == 0 || strcmp(tname, "/h6") == 0) { lt = LINE_H5; cur_scale = 1; cur_bold = 1; }
+                    else if (strcmp(tname, "/p") == 0) lt = LINE_PARA;
+                    else if (strcmp(tname, "/pre") == 0) lt = LINE_PRE;
+                    else if (strcmp(tname, "/li") == 0) lt = LINE_LIST_ITEM;
+                    else if (strcmp(tname, "/blockquote") == 0) lt = LINE_BLOCKQUOTE;
+                    else if (strcmp(tname, "/button") == 0) lt = LINE_FORM_BUTTON;
+                    browser_emit(lt, text_buf, cur_color, cur_bold, cur_italic, cur_underline, cur_scale);
                     tcol = 0;
                 }
-                if (strncasecmp(closing, "h1", 2) == 0 || strncasecmp(closing, "h2", 2) == 0 ||
-                    strncasecmp(closing, "h3", 2) == 0 || strncasecmp(closing, "h4", 2) == 0) {
+
+                if (strcmp(tname, "/h1") == 0 || strcmp(tname, "/h2") == 0 ||
+                    strcmp(tname, "/h3") == 0 || strcmp(tname, "/h4") == 0 ||
+                    strcmp(tname, "/h5") == 0 || strcmp(tname, "/h6") == 0) {
                     browser_emit_empty();
+                    cur_scale = 1; cur_bold = 0;
                 }
-                if (strncasecmp(closing, "style", 5) == 0 || strncasecmp(closing, "script", 6) == 0)
-                    skip_content = 0;
+                if (strcmp(tname, "/p") == 0 || strcmp(tname, "/div") == 0) browser_emit_empty();
+                if (strcmp(tname, "/pre") == 0) { in_pre = 0; browser_emit_empty(); }
+                if (strcmp(tname, "/blockquote") == 0) { in_blockquote = 0; browser_emit_empty(); }
+                if (strcmp(tname, "/ul") == 0) { in_ul = 0; }
+                if (strcmp(tname, "/ol") == 0) { in_ol = 0; }
+                if (strcmp(tname, "/table") == 0) { in_table = 0; table_idx = -1; browser_emit_empty(); }
+                if (strcmp(tname, "/title") == 0) skip_content = 0;
+                if (strcmp(tname, "/style") == 0 || strcmp(tname, "/script") == 0 || strcmp(tname, "/noscript") == 0) skip_content = 0;
+
+                /* reset inline styles on close */
+                if (strcmp(tname, "/b") == 0 || strcmp(tname, "/strong") == 0) cur_bold = 0;
+                if (strcmp(tname, "/i") == 0 || strcmp(tname, "/em") == 0) cur_italic = 0;
+                if (strcmp(tname, "/u") == 0) cur_underline = 0;
+                if (strcmp(tname, "/s") == 0 || strcmp(tname, "/del") == 0 || strcmp(tname, "/strike") == 0) cur_underline = 0;
+                if (strcmp(tname, "/font") == 0) cur_color = COLOR_BLACK;
+                if (strcmp(tname, "/span") == 0) { /* don't reset - keep inherited */ }
             }
             p++;
             continue;
         }
         if (in_tag) {
-            if (tag_len < 31) tag_name[tag_len++] = *p;
+            if (tag_len < 63) tag_name[tag_len++] = *p;
+            if (in_tag_attrs && attr_len < 511) tag_attrs[attr_len++] = *p;
+            if (!in_tag_attrs && tag_len > 0 && tag_name[tag_len-1] == ' ') { in_tag_attrs = 1; tag_len--; }
             p++; continue;
         }
         if (skip_content) { p++; continue; }
 
+        if (in_td) {
+            if (*p == '\n' || *p == '\r' || *p == '\t') { p++; continue; }
+            if (*p == ' ' && td_col > 0 && td_buf[td_col-1] == ' ') { p++; continue; }
+            if (td_col < 255) td_buf[td_col++] = *p;
+            p++; continue;
+        }
+
         if (*p == '&') {
             char ent = 0;
-            if (strncasecmp(p, "&amp;", 5) == 0) { ent = '&'; p += 5; }
-            else if (strncasecmp(p, "&lt;", 4) == 0) { ent = '<'; p += 4; }
-            else if (strncasecmp(p, "&gt;", 4) == 0) { ent = '>'; p += 4; }
-            else if (strncasecmp(p, "&nbsp;", 6) == 0) { ent = ' '; p += 6; }
-            else if (strncasecmp(p, "&quot;", 6) == 0) { ent = '"'; p += 6; }
-            else if (strncasecmp(p, "&apos;", 6) == 0) { ent = '\''; p += 6; }
-            else if (strncasecmp(p, "&mdash;", 7) == 0) { ent = '-'; p += 7; }
-            else if (strncasecmp(p, "&ndash;", 7) == 0) { ent = '-'; p += 7; }
+            int ent_skip = 0;
+            if (strncasecmp(p, "&amp;", 5) == 0) { ent = '&'; ent_skip = 5; }
+            else if (strncasecmp(p, "&lt;", 4) == 0) { ent = '<'; ent_skip = 4; }
+            else if (strncasecmp(p, "&gt;", 4) == 0) { ent = '>'; ent_skip = 4; }
+            else if (strncasecmp(p, "&nbsp;", 6) == 0) { ent = ' '; ent_skip = 6; }
+            else if (strncasecmp(p, "&quot;", 6) == 0) { ent = '"'; ent_skip = 6; }
+            else if (strncasecmp(p, "&apos;", 6) == 0) { ent = '\''; ent_skip = 6; }
+            else if (strncasecmp(p, "&mdash;", 7) == 0) { strncpy(text_buf+tcol, "--", 2); tcol += 2; p += 7; continue; }
+            else if (strncasecmp(p, "&ndash;", 7) == 0) { ent = '-'; ent_skip = 7; }
             else if (strncasecmp(p, "&hellip;", 8) == 0) { strncpy(text_buf+tcol, "...", 3); tcol += 3; p += 8; continue; }
-            else if (strncasecmp(p, "&rsquo;", 7) == 0 || strncasecmp(p, "&lsquo;", 7) == 0) { ent = '\''; p += 7; }
-            else if (strncasecmp(p, "&rdquo;", 7) == 0 || strncasecmp(p, "&ldquo;", 7) == 0) { ent = '"'; p += 7; }
-            else { if (tcol < 1022) text_buf[tcol++] = *p; p++; continue; }
-            if (tcol < 1022) text_buf[tcol++] = ent;
+            else if (strncasecmp(p, "&rsquo;", 7) == 0 || strncasecmp(p, "&lsquo;", 7) == 0) { ent = '\''; ent_skip = 7; }
+            else if (strncasecmp(p, "&rdquo;", 7) == 0 || strncasecmp(p, "&ldquo;", 7) == 0) { ent = '"'; ent_skip = 7; }
+            else if (strncasecmp(p, "&rarr;", 6) == 0) { strncpy(text_buf+tcol, "->", 2); tcol += 2; p += 6; continue; }
+            else if (strncasecmp(p, "&larr;", 6) == 0) { strncpy(text_buf+tcol, "<-", 2); tcol += 2; p += 6; continue; }
+            else if (strncasecmp(p, "&times;", 7) == 0) { ent = 'x'; ent_skip = 7; }
+            else if (strncasecmp(p, "&divide;", 8) == 0) { ent = '/'; ent_skip = 8; }
+            else if (strncasecmp(p, "&copy;", 6) == 0) { strncpy(text_buf+tcol, "(c)", 3); tcol += 3; p += 6; continue; }
+            else if (strncasecmp(p, "&reg;", 5) == 0) { strncpy(text_buf+tcol, "(R)", 3); tcol += 3; p += 5; continue; }
+            else if (strncasecmp(p, "&euro;", 6) == 0) { ent = '$'; ent_skip = 6; }
+            else if (strncasecmp(p, "&pound;", 7) == 0) { ent = '#'; ent_skip = 7; }
+            else if (strncasecmp(p, "&yen;", 5) == 0) { ent = 'Y'; ent_skip = 5; }
+            else {
+                /* numeric entity &#123; or &#x1B; */
+                if (p[1] == '#' && (p[2] == 'x' || p[2] == 'X')) {
+                    unsigned int code = 0;
+                    const char *hex = p + 3;
+                    while (*hex && *hex != ';') {
+                        code *= 16;
+                        if (*hex >= '0' && *hex <= '9') code += *hex - '0';
+                        else if (*hex >= 'a' && *hex <= 'f') code += *hex - 'a' + 10;
+                        else if (*hex >= 'A' && *hex <= 'F') code += *hex - 'A' + 10;
+                        hex++;
+                    }
+                    if (code < 128 && code > 0) ent = (char)code;
+                    ent_skip = hex - p + 1;
+                } else if (p[1] == '#') {
+                    unsigned int code = 0;
+                    const char *dec = p + 2;
+                    while (*dec && *dec != ';') { code = code * 10 + (*dec - '0'); dec++; }
+                    if (code < 128 && code > 0) ent = (char)code;
+                    ent_skip = dec - p + 1;
+                } else {
+                    PUSH_CHAR(*p); p++; continue;
+                }
+            }
+            if (ent) { PUSH_CHAR(ent); p += ent_skip; }
+            else { PUSH_CHAR(*p); p++; }
+            continue;
+        }
+
+        if (in_pre) {
+            if (*p == '\n' || *p == '\r') {
+                FLUSH_TEXT();
+                p++;
+                continue;
+            }
+            PUSH_CHAR(*p);
+            p++;
             continue;
         }
 
         if (*p == '\n' || *p == '\r') { p++; continue; }
-
         if (tcol == 0 && *p == ' ') { p++; continue; }
+        if (*p == '\t') { PUSH_CHAR(' '); PUSH_CHAR(' '); PUSH_CHAR(' '); p++; continue; }
 
-        if (tcol < 1022) text_buf[tcol++] = *p;
+        /* collapse multiple spaces */
+        if (*p == ' ' && tcol > 0 && text_buf[tcol-1] == ' ') { p++; continue; }
+
+        PUSH_CHAR(*p);
         p++;
     }
 
@@ -1290,7 +1647,33 @@ static void browser_parse_html(const char *html) {
             browser_lines[browser_line_count].link_idx = browser_link_count;
             browser_link_count++;
         }
-        browser_emit(lt, text_buf);
+        browser_emit(lt, text_buf, cur_color, cur_bold, cur_italic, cur_underline, cur_scale);
+    }
+
+    /* emit tables as formatted rows */
+    for (int ti = 0; ti < browser_table_count; ti++) {
+        BrowserTable *tb = &browser_tables[ti];
+        if (tb->row_count == 0) continue;
+        /* separator before table */
+        browser_emit(LINE_HR, "", COLOR_MID, 0, 0, 0, 1);
+        for (int ri = 0; ri < tb->row_count; ri++) {
+            BrowserTableRow *tr = &tb->rows[ri];
+            if (tr->col_count == 0) continue;
+            char row_buf[1024] = "";
+            int rcol = 0;
+            for (int ci = 0; ci < tr->col_count && ci < 8; ci++) {
+                int cell_len = strlen(tr->cells[ci]);
+                if (ci > 0 && rcol < 1022) row_buf[rcol++] = '|';
+                for (int cj = 0; cj < cell_len && rcol < 1020; cj++)
+                    row_buf[rcol++] = tr->cells[ci][cj];
+                /* pad to fixed width */
+                int target = (ci < tr->col_count - 1) ? 24 : 0;
+                while (rcol < target + (ci > 0 ? rcol : 0) && rcol < 1020) row_buf[rcol++] = ' ';
+            }
+            row_buf[rcol] = 0;
+            browser_emit(LINE_TABLE_ROW, row_buf, COLOR_BLACK, ri == 0, 0, 0, 1);
+        }
+        browser_emit(LINE_HR, "", COLOR_MID, 0, 0, 0, 1);
     }
 }
 
@@ -1320,85 +1703,163 @@ static void browser_load_url(const char *url) {
     dirty = 1;
 }
 
+static void browser_draw_styled_char(int x, int y, char ch, unsigned char color, int scale, int bold, int italic) {
+    draw_char(x, y, ch, color, scale);
+    if (bold) draw_char(x+1, y, ch, color, scale);
+    if (italic) draw_char(x+1, y+1, ch, color, scale);
+}
+
+static void browser_draw_styled_text(int x, int y, const char *t, unsigned char color, int scale, int bold, int italic, int underline) {
+    int cx = x;
+    int len = 0;
+    const char *s = t;
+    while (*s) { len++; s++; }
+    while (*t) {
+        browser_draw_styled_char(cx, y, *t, color, scale, bold, italic);
+        cx += FONT_W * scale;
+        t++;
+    }
+    if (underline) {
+        int tw = len * FONT_W * scale;
+        draw_rect(x, y + FONT_H * scale, tw, 1, color);
+    }
+}
+
 static void browser_draw(int x, int y, int w, int h) {
     draw_rect(x, y, w, h, COLOR_WHITE);
+
     draw_rounded_rect(x+10, y+10, w-20, 36, 8, COLOR_LIGHT);
-    draw_text(x+18, y+16, browser_url, COLOR_BLACK, 1);
+    unsigned char url_color = browser_input_active ? COLOR_BLACK : COLOR_DARK;
+    draw_text(x+18, y+16, browser_url, url_color, 1);
+    if (browser_input_active) {
+        int cw = text_width("_", 1);
+        int ux = x + 18 + text_width(browser_url, 1);
+        draw_text(ux, y+16, "_", COLOR_BLACK, 1);
+    }
+
     if (browser_loading) {
-        draw_text_centered_in(x, y+80, w, "Loading...", COLOR_MID, 2);
+        draw_text_centered_in(x, y + h/2, w, "Loading...", COLOR_MID, 3);
         return;
     }
     if (browser_line_count == 0) {
         if (browser_input_active)
-            draw_text_centered_in(x, y+80, w, "Type URL and press Enter", COLOR_MID, 2);
+            draw_text_centered_in(x, y + h/2, w, "Type URL and press Enter", COLOR_MID, 2);
         else
-            draw_text_centered_in(x, y+80, w, "Tap URL bar to load", COLOR_MID, 2);
+            draw_text_centered_in(x, y + h/2, w, "Tap URL bar to load", COLOR_MID, 2);
         return;
     }
+
     int iy = y + 56;
-    int max_y = y + h - 4;
+    int max_y = y + h - 44;
     int max_scroll = browser_line_count;
-    if (max_scroll > 0 && browser_scroll > max_scroll - 10) browser_scroll = max_scroll - 10;
+    if (browser_scroll >= max_scroll - 5) browser_scroll = max_scroll - 5;
     if (browser_scroll < 0) browser_scroll = 0;
+
     for (int i = browser_scroll; i < browser_line_count && iy < max_y; i++) {
         BrowserLine *bl = &browser_lines[i];
-        if (!bl->text || strlen(bl->text) == 0) {
-            iy += 10;
+        if (!bl->text) continue;
+
+        unsigned char color = bl->color;
+        int scale = bl->font_scale;
+        int bold = bl->bold;
+        int italic = bl->italic;
+        int underline = bl->underline;
+
+        int line_h = FONT_H * scale + 4;
+
+        if (bl->type == LINE_PARA && strlen(bl->text) == 0) {
+            iy += 8;
             continue;
         }
-        switch (bl->type) {
-            case LINE_H1:
-                draw_text(x+10, iy, bl->text, COLOR_BLACK, 3);
-                iy += 28;
-                iy += 6;
-                break;
-            case LINE_H2:
-                draw_text(x+10, iy, bl->text, COLOR_BLACK, 2);
-                iy += 22;
-                iy += 4;
-                break;
-            case LINE_H3:
-            case LINE_H4:
-                draw_text(x+10, iy, bl->text, COLOR_DARK, 2);
-                iy += 20;
-                iy += 4;
-                break;
-            case LINE_HR:
-                draw_rect(x+10, iy+6, w-20, 2, COLOR_MID);
-                iy += 16;
-                break;
-            case LINE_LIST:
-                draw_text(x+10, iy, bl->text, COLOR_BLACK, 1);
-                iy += 16;
-                break;
-            case LINE_LINK:
-                draw_text(x+10, iy, bl->text, COLOR_MID, 1);
-                { int tw2 = text_width(bl->text, 1);
-                  draw_rect(x+10, iy+12, tw2, 1, COLOR_MID); }
-                iy += 16;
-                break;
-            case LINE_PRE:
-                draw_text(x+10, iy, bl->text, COLOR_DARK, 1);
-                iy += 16;
-                break;
-            case LINE_PARA:
-                iy += 8;
-                break;
-            case LINE_TEXT:
-            default:
-                draw_text(x+10, iy, bl->text, COLOR_BLACK, 1);
-                iy += 16;
-                break;
+
+        if (bl->type == LINE_HR) {
+            iy += 4;
+            draw_rect(x+10, iy, w-20, 2, COLOR_MID);
+            iy += 8;
+            continue;
         }
+
+        if (bl->type == LINE_IMAGE) {
+            draw_rounded_rect(x+10, iy, w-20, 40, 6, COLOR_LIGHT);
+            draw_text_centered_in(x, iy+12, w, bl->text, COLOR_MID, 1);
+            iy += 48;
+            continue;
+        }
+
+        if (bl->type == LINE_TABLE_ROW) {
+            int tw2 = text_width(bl->text, 1);
+            draw_rect(x+10, iy, tw2 + 8, line_h - 2, COLOR_WHITE);
+            draw_rect(x+10, iy, tw2 + 8, line_h - 2, COLOR_LIGHT);
+            draw_rect(x+10, iy, tw2 + 8, 1, COLOR_MID);
+            browser_draw_styled_text(x+14, iy+2, bl->text, color, scale, bold, italic, underline);
+            iy += line_h;
+            continue;
+        }
+
+        if (bl->type == LINE_FORM_INPUT) {
+            draw_rounded_rect(x+10, iy, w-20, 28, 6, COLOR_LIGHT);
+            draw_rect(x+12, iy+2, w-24, 24, COLOR_WHITE);
+            browser_draw_styled_text(x+18, iy+6, bl->text, COLOR_DARK, 1, 0, 0, 0);
+            iy += 32;
+            continue;
+        }
+
+        if (bl->type == LINE_FORM_BUTTON) {
+            int bw2 = text_width(bl->text, 2) + 24;
+            int bx = x + (w - bw2) / 2;
+            draw_rounded_rect(bx, iy, bw2, 30, 8, COLOR_DARK);
+            draw_text_centered_in(bx, iy+6, bw2, bl->text, COLOR_WHITE, 2);
+            iy += 36;
+            continue;
+        }
+
+        if (bl->type == LINE_BLOCKQUOTE) {
+            draw_rect(x+10, iy, 4, line_h - 2, COLOR_MID);
+            browser_draw_styled_text(x+20, iy+2, bl->text, COLOR_DARK, scale, bold, italic, underline);
+            iy += line_h;
+            continue;
+        }
+
+        if (bl->type == LINE_LIST_ITEM || bl->type == LINE_OL_ITEM) {
+            browser_draw_styled_text(x+14, iy+2, bl->text, color, scale, bold, italic, underline);
+            iy += line_h;
+            continue;
+        }
+
+        if (bl->type == LINE_PRE) {
+            draw_rect(x+8, iy-1, w-16, line_h, COLOR_LIGHT);
+            browser_draw_styled_text(x+14, iy+2, bl->text, COLOR_BLACK, 1, 0, 0, 0);
+            iy += line_h;
+            continue;
+        }
+
+        if (bl->type == LINE_LINK) {
+            browser_draw_styled_text(x+14, iy+2, bl->text, COLOR_DARK, scale, 0, 0, 0);
+            int lw = text_width(bl->text, scale);
+            draw_rect(x+14, iy + 2 + FONT_H * scale, lw, 1, COLOR_DARK);
+            iy += line_h;
+            continue;
+        }
+
+        browser_draw_styled_text(x+14, iy+2, bl->text, color, scale, bold, italic, underline);
+        iy += line_h;
     }
+
     if (browser_scroll > 0) {
-        draw_rounded_rect(x+w-40, y+h-40, 30, 30, 8, COLOR_LIGHT);
-        draw_text_centered_in(x+w-40, y+h-34, 30, "^", COLOR_BLACK, 2);
+        draw_rounded_rect(x+w-44, y+h-44, 34, 34, 8, COLOR_LIGHT);
+        draw_text_centered_in(x+w-44, y+h-38, 34, "^", COLOR_BLACK, 2);
     }
-    if (browser_scroll < max_scroll - 10) {
-        draw_rounded_rect(x+10, y+h-40, 30, 30, 8, COLOR_LIGHT);
-        draw_text_centered_in(x+10, y+h-34, 30, "v", COLOR_BLACK, 2);
+    if (browser_scroll < max_scroll - 5) {
+        draw_rounded_rect(x+10, y+h-44, 34, 34, 8, COLOR_LIGHT);
+        draw_text_centered_in(x+10, y+h-38, 34, "v", COLOR_BLACK, 2);
     }
+
+    int bar_w = 8;
+    int bar_h = (max_scroll > 0) ? (h - 56 - 48) * 10 / max_scroll : 0;
+    if (bar_h < 20) bar_h = 20;
+    if (bar_h > h - 56 - 48) bar_h = h - 56 - 48;
+    int bar_y = y + 56 + (max_scroll > 0 ? (h - 56 - 48) * browser_scroll / max_scroll : 0);
+    draw_rect(x + w - 6, bar_y, bar_w, bar_h, COLOR_MID);
 }
 
 static void browser_handle(int tx, int ty, int released) {
@@ -1412,40 +1873,72 @@ static void browser_handle(int tx, int ty, int released) {
         return;
     }
     if (browser_loading) return;
-    int line_h = 16;
-    int visible = (screen_height - TOPBAR_H - 66) / line_h;
+
+    if (browser_scroll < 0) browser_scroll = 0;
+
     int iy = TOPBAR_H + 56;
-    if (ty >= iy && ty < iy + visible * line_h) {
-        int idx = browser_scroll + (ty - iy) / line_h;
-        if (idx < browser_line_count) {
-            for (int j = 0; j < browser_link_count; j++) {
-                if (browser_links[j].line == idx) {
-                    char full[512] = "";
-                    if (strncmp(browser_links[j].url, "http", 4) == 0)
-                        strncpy(full, browser_links[j].url, sizeof(full)-1);
-                    else if (browser_links[j].url[0] == '/') {
-                        const char *host = strstr(browser_url, "://");
-                        if (host) {
-                            host += 3;
-                            const char *slash = strchr(host, '/');
-                            int hlen = slash ? (slash - host) : strlen(host);
-                            snprintf(full, sizeof(full), "%.*s://%.*s%s", (int)(host - 3 - browser_url), browser_url, hlen, host, browser_links[j].url);
-                        }
+    for (int i = browser_scroll; i < browser_line_count && iy < screen_height - TOPBAR_H - 44; i++) {
+        BrowserLine *bl = &browser_lines[i];
+        if (!bl->text) continue;
+        int line_h;
+        switch (bl->type) {
+            case LINE_H1: line_h = FONT_H * 3 + 8; break;
+            case LINE_H2: case LINE_H3: case LINE_H4: line_h = FONT_H * 2 + 6; break;
+            case LINE_IMAGE: line_h = 48; break;
+            case LINE_FORM_INPUT: line_h = 32; break;
+            case LINE_FORM_BUTTON: line_h = 36; break;
+            case LINE_PARA: if (strlen(bl->text) == 0) { iy += 8; continue; } line_h = 16; break;
+            default: line_h = FONT_H * (bl->font_scale > 0 ? bl->font_scale : 1) + 4; break;
+        }
+
+        if (ty >= iy && ty < iy + line_h) {
+            /* link tap */
+            if (bl->link_idx >= 0 && bl->link_idx < browser_link_count) {
+                BrowserLink *lk = &browser_links[bl->link_idx];
+                char full[512] = "";
+                if (strncmp(lk->url, "http", 4) == 0)
+                    strncpy(full, lk->url, sizeof(full)-1);
+                else if (lk->url[0] == '/') {
+                    const char *host = strstr(browser_url, "://");
+                    if (host) {
+                        host += 3;
+                        const char *slash = strchr(host, '/');
+                        int hlen = slash ? (slash - host) : strlen(host);
+                        snprintf(full, sizeof(full), "%.*s://%.*s%s", (int)(host - 3 - browser_url), browser_url, hlen, host, lk->url);
                     }
-                    if (strlen(full) > 0) browser_load_url(full);
-                    return;
+                }
+                if (strlen(full) > 0) browser_load_url(full);
+                return;
+            }
+            /* form input tap */
+            if (bl->type == LINE_FORM_INPUT) {
+                for (int fi = 0; fi < browser_field_count; fi++) {
+                    if (browser_fields[fi].line == i) {
+                        browser_active_field = fi;
+                        keyboard_visible = 1;
+                        keyboard_mode = 0;
+                        strcpy(keyboard_buf, browser_fields[fi].value);
+                        keyboard_cursor = strlen(keyboard_buf);
+                        browser_input_active = 1;
+                        return;
+                    }
                 }
             }
+            /* form button tap */
+            if (bl->type == LINE_FORM_BUTTON) {
+                dirty = 1;
+                return;
+            }
         }
+        iy += line_h;
     }
-    int bw = 30;
-    if (point_in_rect(tx, ty, screen_width-40, screen_height-TOPBAR_H-40, 30, 30) && browser_scroll > 0) {
+
+    if (point_in_rect(tx, ty, screen_width-44, screen_height-TOPBAR_H-44, 34, 34) && browser_scroll > 0) {
         browser_scroll -= 5; dirty = 1; return;
     }
-    if (point_in_rect(tx, ty, 10, screen_height-TOPBAR_H-40, 30, 30) && browser_scroll < browser_line_count) {
+    if (point_in_rect(tx, ty, 10, screen_height-TOPBAR_H-44, 34, 34) && browser_scroll < browser_line_count) {
         browser_scroll += 5; dirty = 1; return;
     }
-    (void)bw;
 }
 
 #define MAX_INSTALLED_APPS 32
