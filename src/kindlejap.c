@@ -22,7 +22,7 @@
 #define LOCKFILE "/tmp/kindlejap.lock"
 #define LOGFILE "/mnt/us/kindlejap.log"
 #define COMMUNITY_APPS_DIR "/mnt/us/kindlejap_apps"
-#define TASKBAR_H 52
+#define TOPBAR_H 40
 #define KEYBOARD_H 290
 #define FONT_W 8
 #define FONT_H 13
@@ -46,9 +46,11 @@ int fb_fd = -1;
 unsigned char *fb_mem = NULL;
 int screen_width, screen_height, bytes_per_pixel;
 int input_fd = -1;
+int power_btn_fd = -1;
 volatile int running = 1;
 int lock_fd = -1;
 static int dirty = 1;
+static int downbar_visible = 0;
 
 struct mxcfb_rect { uint32_t top, left, width, height; };
 struct mxcfb_alt_buffer_data { uint32_t phys_addr, width, height; struct mxcfb_rect alt_update_region; };
@@ -164,6 +166,46 @@ void init_input(void) {
     }
     closedir(d);
     input_fd = best;
+}
+
+static void init_power_button(void) {
+    DIR *d = opendir("/dev/input"); if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "event", 5)) continue;
+        char p[64]; snprintf(p, sizeof(p), "/dev/input/%s", e->d_name);
+        int fd = open(p, O_RDONLY | O_NONBLOCK); if (fd < 0) continue;
+        char name[256] = "";
+        ioctl(fd, EVIOCGNAME(sizeof(name)), name);
+        if (strstr(name, "Power") || strstr(name, "power") || strstr(name, "max77696")) {
+            power_btn_fd = fd; log_msg("Power button found"); break;
+        }
+        close(fd);
+    }
+    closedir(d);
+}
+
+static int read_battery(void) {
+    DIR *d = opendir("/sys/class/power_supply"); if (!d) return -1;
+    struct dirent *e; int pct = -1;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        char path[128]; snprintf(path, sizeof(path), "/sys/class/power_supply/%s/capacity", e->d_name);
+        FILE *f = fopen(path, "r");
+        if (f) { if (fscanf(f, "%d", &pct) == 1) { fclose(f); closedir(d); return pct; } fclose(f); }
+    }
+    closedir(d);
+    return -1;
+}
+
+static int read_wifi(void) {
+    char buf[8] = {0};
+    FILE *f = fopen("/sys/class/net/wlan0/operstate", "r");
+    if (!f) f = fopen("/sys/class/net/eth0/operstate", "r");
+    if (!f) return 0;
+    int r = fread(buf, 1, 7, f); fclose(f);
+    (void)r;
+    return (buf[0] == 'u') ? 1 : 0;
 }
 
 void draw_pixel(int x, int y, unsigned char c) {
@@ -390,7 +432,7 @@ static const char *kb_rows[3] = {
 };
 
 void keyboard_draw(void) {
-    int ky = screen_height - KEYBOARD_H - TASKBAR_H;
+    int ky = screen_height - KEYBOARD_H;
     draw_rounded_rect(0, ky, screen_width, KEYBOARD_H, CORNER_R, COLOR_LIGHTER);
     draw_rounded_rect(10, ky+10, screen_width-20, 38, 8, COLOR_WHITE);
     if (keyboard_cursor > 0) {
@@ -425,7 +467,7 @@ void keyboard_draw(void) {
 }
 
 void keyboard_handle_touch(int tx, int ty) {
-    int ky = screen_height - KEYBOARD_H - TASKBAR_H;
+    int ky = screen_height - KEYBOARD_H;
     if (point_in_rect(tx, ty, 30, ky+14, 60, 30)) {
         keyboard_visible = 0; return;
     }
@@ -525,40 +567,36 @@ void app_close_active(void) {
 }
 
 static int menu_visible = 0;
-static int power_menu_visible = 0;
 
-static int taskbar_power_btn_x(void) { return screen_width - 50; }
-
-static void taskbar_draw(void) {
-    int ty = screen_height - TASKBAR_H;
-    draw_rect(0, ty, screen_width, TASKBAR_H, COLOR_DARK);
-    int tx = 56;
-    for (int i=0; i<open_count; i++) {
-        int tw2 = text_width(open_apps[i]->name, 2) + 20;
-        unsigned char bg = (i==active_app_idx) ? COLOR_MID : COLOR_DARK;
-        draw_rounded_rect(tx, ty+8, tw2, 36, CORNER_R, bg);
-        draw_text(tx+8, ty+12, open_apps[i]->name, COLOR_WHITE, 2);
-        tx += tw2 + 8;
+static void topbar_draw(void) {
+    draw_rect(0, 0, screen_width, TOPBAR_H, COLOR_DARK);
+    int bat = read_battery();
+    if (bat >= 0) {
+        char bstr[16]; snprintf(bstr, sizeof(bstr), "%d%%", bat);
+        int bw = text_width(bstr, 2);
+        draw_text(screen_width - bw - 16, 10, bstr, COLOR_WHITE, 2);
     }
-    draw_rounded_rect(10, ty+8, 36, 36, CORNER_R, COLOR_WHITE);
-    draw_rect(16, ty+18, 24, 2, COLOR_DARK);
-    draw_rect(16, ty+24, 24, 2, COLOR_DARK);
-    draw_rect(16, ty+30, 24, 2, COLOR_DARK);
-    int px = taskbar_power_btn_x();
-    draw_rounded_rect(px, ty+8, 36, 36, CORNER_R, COLOR_WHITE);
-    int cy = ty + 26;
-    draw_circle(px+18, cy, 7, COLOR_DARK);
-    draw_rect(px+16, cy-10, 4, 5, COLOR_DARK);
+    int wifi = read_wifi();
+    draw_text(16, 10, wifi ? "WiFi" : "---", COLOR_WHITE, 2);
 }
 
-static int taskbar_menu_btn(void) { return 10; }
+static void downbar_draw(void) {
+    if (!downbar_visible) return;
+    draw_rect(0, TOPBAR_H, screen_width, 60, COLOR_LIGHT);
+    draw_rounded_rect(10, TOPBAR_H+10, 100, 40, 8, COLOR_WHITE);
+    draw_text(20, TOPBAR_H+18, "Menu", COLOR_BLACK, 2);
+    draw_rounded_rect(screen_width/2-50, TOPBAR_H+10, 100, 40, 8, COLOR_WHITE);
+    draw_text(screen_width/2-40, TOPBAR_H+18, "Sleep", COLOR_BLACK, 2);
+    draw_rounded_rect(screen_width-110, TOPBAR_H+10, 100, 40, 8, COLOR_WHITE);
+    draw_text(screen_width-100, TOPBAR_H+18, "Exit", COLOR_BLACK, 2);
+}
 
 static void menu_draw(void) {
     if (!menu_visible) return;
     int mw = 280, mh = 300;
-    int mx = 10, my = screen_height - TASKBAR_H - mh - 10;
+    int mx = (screen_width - mw) / 2, my = TOPBAR_H + 80;
     draw_rounded_rect(mx, my, mw, mh, CORNER_R, COLOR_WHITE);
-    const char *items[] = {"Calculator", "Files", "Network", "Browser", "Check Update", "Exit"};
+    const char *items[] = {"Calculator", "Files", "Network", "Browser", "Check Update", "Close"};
     for (int i=0; i<6; i++) {
         int iy = my + 10 + i*46;
         draw_rounded_rect(mx+10, iy, mw-20, 40, 8, COLOR_LIGHT);
@@ -566,9 +604,23 @@ static void menu_draw(void) {
     }
 }
 
+static void downbar_handle_touch(int tx, int ty) {
+    if (point_in_rect(tx, ty, 10, TOPBAR_H+10, 100, 40)) {
+        menu_visible = 1; downbar_visible = 0; return;
+    }
+    if (point_in_rect(tx, ty, screen_width/2-50, TOPBAR_H+10, 100, 40)) {
+        downbar_visible = 0;
+        system("lipc-set-prop com.lab126.powerd sleep 1 2>/dev/null");
+        return;
+    }
+    if (point_in_rect(tx, ty, screen_width-110, TOPBAR_H+10, 100, 40)) {
+        running = 0; downbar_visible = 0; return;
+    }
+}
+
 static void menu_handle_touch(int tx, int ty) {
     int mw=280, mh=300;
-    int mx=10, my=screen_height-TASKBAR_H-mh-10;
+    int mx=(screen_width-mw)/2, my=TOPBAR_H+80;
     if (!point_in_rect(tx, ty, mx, my, mw, mh)) { menu_visible=0; return; }
     App *apps[] = {&calc_app, &file_app, &net_app, &browser_app};
     for (int i=0; i<4; i++) {
@@ -585,37 +637,9 @@ static void menu_handle_touch(int tx, int ty) {
     }
     int iy5 = my+10+5*46;
     if (point_in_rect(tx, ty, mx+10, iy5, mw-20, 40)) {
-        running=0; menu_visible=0;
+        menu_visible=0;
     }
 }
-
-static void power_menu_draw(void) {
-    if (!power_menu_visible) return;
-    int pw=200, ph=140;
-    int px=taskbar_power_btn_x()-pw+36, py=screen_height-TASKBAR_H-ph-10;
-    draw_rounded_rect(px, py, pw, ph, CORNER_R, COLOR_WHITE);
-    draw_rounded_rect(px+10, py+10, pw-20, 38, 8, COLOR_LIGHT);
-    draw_text(px+20, py+18, "Sleep", COLOR_BLACK, 2);
-    draw_rounded_rect(px+10, py+56, pw-20, 38, 8, COLOR_LIGHT);
-    draw_text(px+20, py+64, "Power Off", COLOR_BLACK, 2);
-}
-
-static void power_menu_handle_touch(int tx, int ty) {
-    int pw=200, ph=140;
-    int px=taskbar_power_btn_x()-pw+36, py=screen_height-TASKBAR_H-ph-10;
-    if (!point_in_rect(tx, ty, px, py, pw, ph)) { power_menu_visible=0; return; }
-    if (point_in_rect(tx, ty, px+10, py+10, pw-20, 38)) {
-        power_menu_visible=0;
-        system("lipc-set-prop com.lab126.powerd sleep 1 2>/dev/null");
-        return;
-    }
-    if (point_in_rect(tx, ty, px+10, py+56, pw-20, 38)) {
-        power_menu_visible=0; running=0;
-    }
-}
-
-static int menu_toggle(void) { menu_visible = !menu_visible; power_menu_visible=0; return menu_visible; }
-static int power_menu_toggle(void) { power_menu_visible = !power_menu_visible; menu_visible=0; return power_menu_visible; }
 
 static int update_state = 0;
 static char update_version[32] = "";
@@ -711,7 +735,7 @@ static void calc_handle(int tx, int ty, int released) {
     int bw=(screen_width-40)/4, bh=60;
     for (int r=0; r<4; r++)
         for (int c=0; c<4; c++) {
-            int kx=10+c*bw, ky=80+r*bh;
+            int kx=10+c*bw, ky=TOPBAR_H+80+r*bh;
             if (point_in_rect(tx, ty, kx+2, ky+2, bw-4, bh-4)) {
                 const char *keys[]={"7","8","9","+","4","5","6","-","1","2","3","*","C","0","=","/"};
                 const char *k=keys[r*4+c];
@@ -772,7 +796,7 @@ static void file_draw(int x, int y, int w, int h) {
 
 static void file_handle(int tx, int ty, int released) {
     if (!released) return;
-    int iy = 56;
+    int iy = TOPBAR_H + 56;
     for (int i=file_scroll; i<file_count; i++) {
         if (point_in_rect(tx, ty, 10, iy, screen_width-20, 40)) {
             char full[512]; snprintf(full, sizeof(full), "%s/%s", file_path, file_entries[i]);
@@ -784,7 +808,7 @@ static void file_handle(int tx, int ty, int released) {
         }
         iy += 46;
     }
-    if (ty < 46) {
+    if (ty > TOPBAR_H && ty < TOPBAR_H + 46) {
         char *slash = strrchr(file_path, '/');
         if (slash && slash != file_path) { *slash = 0; file_load(file_path); }
     }
@@ -826,7 +850,7 @@ static void net_draw(int x, int y, int w, int h) {
 
 static void net_handle(int tx, int ty, int released) {
     if (!released) return;
-    int iy = 60;
+    int iy = TOPBAR_H + 60;
     for (int i=0; i<net_count; i++) {
         if (point_in_rect(tx, ty, 10, iy, screen_width-20, 40)) {
             char cmd[256]; snprintf(cmd, sizeof(cmd), "echo connecting to %s", net_ssids[i]);
@@ -853,7 +877,7 @@ static void browser_draw(int x, int y, int w, int h) {
 
 static void browser_handle(int tx, int ty, int released) {
     if (!released) return;
-    if (point_in_rect(tx, ty, 10, 10, screen_width-20, 36)) {
+    if (point_in_rect(tx, ty, 10, TOPBAR_H+10, screen_width-20, 36)) {
         keyboard_visible = 1;
         keyboard_cursor = strlen(browser_url);
         strcpy(keyboard_buf, browser_url);
@@ -909,6 +933,7 @@ int main(void) {
     system("lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null");
     init_framebuffer();
     init_input();
+    init_power_button();
     log_msg("Initialized");
     show_splash();
     sleep(1);
@@ -935,38 +960,33 @@ int main(void) {
                             }
                             continue;
                         }
-                        if (touch_y >= screen_height - TASKBAR_H) {
-                            if (point_in_rect(touch_x, touch_y, taskbar_menu_btn(), screen_height-TASKBAR_H+8, 36, 36))
-                                menu_toggle();
-                            else if (point_in_rect(touch_x, touch_y, taskbar_power_btn_x(), screen_height-TASKBAR_H+8, 36, 36))
-                                power_menu_toggle();
-                            else {
-                                int tw = 56;
-                                for (int i=0; i<open_count; i++) {
-                                    int ww = text_width(open_apps[i]->name, 2) + 20;
-                                    if (touch_x >= tw-2 && touch_x < tw+ww+2) active_app_idx = i;
-                                    tw += ww + 8;
-                                }
-                            }
-                            continue;
-                        }
+                        if (downbar_visible) { downbar_handle_touch(touch_x, touch_y); continue; }
                         if (menu_visible) { menu_handle_touch(touch_x, touch_y); continue; }
-                        if (power_menu_visible) { power_menu_handle_touch(touch_x, touch_y); continue; }
                         if (active_app_idx >= 0 && active_app_idx < open_count)
                             open_apps[active_app_idx]->on_touch(touch_x, touch_y, 1);
                     }
                 }
             }
         }
+        if (power_btn_fd >= 0) {
+            struct input_event pev;
+            while (read(power_btn_fd, &pev, sizeof(pev)) == sizeof(pev)) {
+                if (pev.type == EV_KEY && pev.code == 116 && pev.value == 1) {
+                    dirty = 1;
+                    if (menu_visible) { menu_visible = 0; }
+                    else { downbar_visible = !downbar_visible; }
+                }
+            }
+        }
         if (!dirty) { usleep(50000); continue; }
         draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
         if (active_app_idx >= 0 && active_app_idx < open_count) {
-            int app_h = screen_height - TASKBAR_H;
-            open_apps[active_app_idx]->draw(0, 0, screen_width, app_h);
+            int app_h = screen_height - TOPBAR_H;
+            open_apps[active_app_idx]->draw(0, TOPBAR_H, screen_width, app_h);
         }
-        taskbar_draw();
+        topbar_draw();
+        downbar_draw();
         menu_draw();
-        power_menu_draw();
         if (keyboard_visible) keyboard_draw();
         update_draw();
         refresh_screen();
@@ -976,6 +996,7 @@ int main(void) {
     for (int i=open_count-1; i>=0; i--)
         if (open_apps[i]->cleanup) open_apps[i]->cleanup();
     if (input_fd >= 0) close(input_fd);
+    if (power_btn_fd >= 0) close(power_btn_fd);
     if (fb_mem && fb_mem != MAP_FAILED) munmap(fb_mem, finfo.smem_len);
     if (fb_fd >= 0) close(fb_fd);
     release_lock();
