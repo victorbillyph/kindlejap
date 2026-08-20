@@ -17,7 +17,7 @@
 #include <math.h>
 #include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "2.0.0"
+#define KINDLEJAP_VERSION "2.0.1"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -490,8 +490,8 @@ void menu_draw(void) {
     draw_rect(0, 0, screen_width, screen_height - TASKBAR_H, 0x20);
     int y = 100;
     draw_text_centered(60, "KINDLEJAP " KINDLEJAP_VERSION, COLOR_WHITE, 3);
-    const char *items[] = {"Calculator", "File Explorer", "Network", "Browser", "KUAL Apps", "Settings", "Exit"};
-    int count = 7;
+    const char *items[] = {"Calculator", "File Explorer", "Network", "Browser", "KUAL Apps", "Check Update", "Settings", "Exit"};
+    int count = 8;
     for (int i = 0; i < count; i++) {
         int iw = text_width(items[i], 3) + 40;
         int ix = (screen_width - iw) / 2;
@@ -504,15 +504,35 @@ void menu_draw(void) {
 int menu_handle_touch(int x, int y, int pressed) {
     if (!menu_visible || pressed) return 0;
     int items_y = 100;
-    const char *names[] = {"Calculator", "File Explorer", "Network", "Browser", "KUAL Apps", "Settings", "Exit"};
-    for (int i = 0; i < 7; i++) {
+    const char *names[] = {"Calculator", "File Explorer", "Network", "Browser", "KUAL Apps", "Check Update", "Settings", "Exit"};
+    for (int i = 0; i < 8; i++) {
         int iw = text_width(names[i], 3) + 40;
         int ix = (screen_width - iw) / 2;
         if (point_in_rect(x, y, ix, items_y, iw, 50)) {
             menu_visible = 0;
             if (i < 4 && registered_count > i) { app_open(&registered[i]); return 1; }
             if (i == 4) { system("killall kindlejap-bin 2>/dev/null"); return 1; }
-            if (i == 6) { running = 0; return 1; }
+            if (i == 5) {
+                if (check_update()) {
+                    while (running && update_state != 0) {
+                        draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
+                        update_draw_dialog();
+                        refresh_screen();
+                        if (input_fd >= 0) {
+                            struct input_event ev;
+                            static int ux=0,uy=0,ut=0;
+                            while (read(input_fd,&ev,sizeof(ev))==sizeof(ev)) {
+                                if (ev.type==EV_ABS) { if(ev.code==ABS_X||ev.code==ABS_MT_POSITION_X) ux=ev.value; if(ev.code==ABS_Y||ev.code==ABS_MT_POSITION_Y) uy=ev.value; }
+                                if (ev.type==EV_KEY && ev.code==BTN_TOUCH) ut=ev.value;
+                                if (ev.type==EV_SYN && ev.code==SYN_REPORT && !ut) update_handle_touch(ux,uy,0);
+                            }
+                        }
+                        usleep(16000);
+                    }
+                }
+                return 1;
+            }
+            if (i == 7) { running = 0; return 1; }
             return 1;
         }
         items_y += 60;
@@ -834,6 +854,88 @@ static void community_scan(void) {
     closedir(d);
 }
 
+/* ========================= AUTO-UPDATE ========================= */
+static int update_state = 0;
+static char update_remote_ver[32] = "";
+static char update_download_url[512] = "";
+
+static int ver_compare(const char *a, const char *b) {
+    int a1=0,a2=0,a3=0,b1=0,b2=0,b3=0;
+    sscanf(a, "%d.%d.%d", &a1,&a2,&a3);
+    sscanf(b, "%d.%d.%d", &b1,&b2,&b3);
+    if (a1!=b1) return a1-b1; if (a2!=b2) return a2-b2; return a3-b3;
+}
+
+static int check_update(void) {
+    update_state = 0;
+    system("curl -s --connect-timeout 5 --max-time 10 " GITHUB_API_URL " > /tmp/kj_update.json 2>/dev/null");
+    FILE *f = fopen("/tmp/kj_update.json", "r"); if (!f) return 0;
+    char buf[8192]; int n = fread(buf, 1, sizeof(buf)-1, f); buf[n]=0; fclose(f);
+    if (n < 10) return 0;
+    char *tag = strstr(buf, "\"tag_name\"");
+    if (!tag) return 0;
+    tag = strchr(tag, ':'); if (!tag) return 0;
+    tag++; while (*tag == ' ' || *tag == '\"') tag++;
+    char *end = strchr(tag, '\"'); if (end) *end = 0;
+    strncpy(update_remote_ver, tag, sizeof(update_remote_ver)-1);
+    char *tar = strstr(buf, "\"browser_download_url\"");
+    if (!tar) return 0;
+    tar = strchr(tar, ':'); if (!tar) return 0;
+    tar++; while (*tar == ' ' || *tar == '\"') tar++;
+    end = strchr(tar, '\"'); if (end) *end = 0;
+    strncpy(update_download_url, tar, sizeof(update_download_url)-1);
+    if (ver_compare(update_remote_ver, KINDLEJAP_VERSION) > 0) { update_state = 1; return 1; }
+    return 0;
+}
+
+static void do_update(void) {
+    update_state = 2;
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "%s \"%s\" \"%s\"", UPDATE_SCRIPT, KINDLEJAP_VERSION, update_download_url);
+    log_msg("running update");
+    restore_kindle_ui();
+    release_lock();
+    if (fb_mem) munmap(fb_mem, finfo.smem_len); fb_mem = NULL;
+    if (fb_fd >= 0) { close(fb_fd); fb_fd = -1; }
+    if (input_fd >= 0) { close(input_fd); input_fd = -1; }
+    execl(UPDATE_SCRIPT, "update.sh", KINDLEJAP_VERSION, update_download_url, NULL);
+    system(cmd);
+    execl("/mnt/us/extensions/kindlejap/bin/kindlejap.sh", "kindlejap.sh", NULL);
+    _exit(0);
+}
+
+void update_draw_dialog(void) {
+    if (update_state == 0) return;
+    draw_rect(0, 0, screen_width, screen_height, 0x10);
+    int dw = 600, dh = 300;
+    int dx = (screen_width - dw) / 2, dy = (screen_height - dh) / 2;
+    draw_rect(dx, dy, dw, dh, COLOR_WHITE);
+    draw_rect(dx, dy, dw, 40, COLOR_DARK);
+    draw_text(dx+10, dy+10, "UPDATE", COLOR_WHITE, 2);
+    if (update_state == 1) {
+        draw_text(dx+20, dy+60, "New version available:", COLOR_BLACK, 2);
+        draw_text(dx+20, dy+90, update_remote_ver, COLOR_DARK, 3);
+        int btn_y = dy + dh - 70;
+        draw_rect(dx+20, btn_y, 120, 45, COLOR_DARK);
+        draw_text(dx+35, btn_y+12, "YES", COLOR_WHITE, 2);
+        draw_rect(dx+dw-140, btn_y, 120, 45, COLOR_DARK);
+        draw_text(dx+dw-125, btn_y+12, "NO", COLOR_WHITE, 2);
+    } else if (update_state == 2) {
+        draw_text_centered(dy+100, "Downloading update...", COLOR_BLACK, 2);
+        draw_text_centered(dy+140, "KindleJap will restart", COLOR_DARK, 2);
+    }
+}
+
+int update_handle_touch(int x, int y, int pressed) {
+    if (update_state != 1 || pressed) return 0;
+    int dw = 600, dh = 300;
+    int dx = (screen_width - dw) / 2, dy = (screen_height - dh) / 2;
+    int btn_y = dy + dh - 70;
+    if (point_in_rect(x, y, dx+20, btn_y, 120, 45)) { do_update(); return 1; }
+    if (point_in_rect(x, y, dx+dw-140, btn_y, 120, 45)) { update_state = 0; return 1; }
+    return 1;
+}
+
 /* ========================= SIGNAL HANDLER ========================= */
 void signal_handler(int sig) {
     if (sig == SIGSEGV || sig == SIGBUS || sig == SIGABRT) {
@@ -889,6 +991,26 @@ int main(int argc, char *argv[]) {
 
     kual_scan(); community_scan();
     log_msg("setup done");
+
+    log_msg("checking update");
+    if (check_update()) {
+        log_msg("update available");
+        while (running && update_state != 0) {
+            draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
+            update_draw_dialog();
+            refresh_screen();
+            if (input_fd >= 0) {
+                struct input_event ev;
+                static int ux=0,uy=0,ut=0;
+                while (read(input_fd,&ev,sizeof(ev))==sizeof(ev)) {
+                    if (ev.type==EV_ABS) { if(ev.code==ABS_X||ev.code==ABS_MT_POSITION_X) ux=ev.value; if(ev.code==ABS_Y||ev.code==ABS_MT_POSITION_Y) uy=ev.value; }
+                    if (ev.type==EV_KEY && ev.code==BTN_TOUCH) ut=ev.value;
+                    if (ev.type==EV_SYN && ev.code==SYN_REPORT && !ut) update_handle_touch(ux,uy,0);
+                }
+            }
+            usleep(16000);
+        }
+    }
 
     active_app_idx = -1;
     open_count = 0;

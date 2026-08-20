@@ -5,6 +5,8 @@ All notable changes to KindleJap will be documented in this file.
 ## [2.0.0] - 2026-08-19
 
 ### Added
+- Auto-update with restart - checks GitHub on startup and via menu
+- Shows update dialog, downloads and installs, then execs new binary
 - App framework with maximize mode, app stack, and registry
 - QWERTY keyboard overlay with shift, backspace, and submit
 - Calculator app with basic operations
