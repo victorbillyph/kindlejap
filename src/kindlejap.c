@@ -14,8 +14,68 @@
 #include <pthread.h>
 #include <errno.h>
 #include <time.h>
+#include <sys/mman.h>
 
-#define KINDLEJAP_VERSION "1.2.3"
+struct mxcfb_rect {
+    uint32_t top;
+    uint32_t left;
+    uint32_t width;
+    uint32_t height;
+};
+
+struct mxcfb_update_data {
+    struct mxcfb_rect update_region;
+    uint32_t waveform_mode;
+    uint32_t update_mode;
+    uint32_t update_marker;
+    int temp;
+    unsigned int flags;
+};
+
+#define MXCFB_SEND_UPDATE _IOW('F', 0x2E, struct mxcfb_update_data)
+#define MXCFB_WAIT_FOR_UPDATE _IOW('F', 0x2F, uint32_t)
+#define WAVEFORM_MODE_GC16 2
+#define WAVEFORM_MODE_GC4 0
+#define UPDATE_MODE_PARTIAL 0
+#define UPDATE_MODE_FULL 1
+
+void refresh_screen(void) {
+    if (fb_fd < 0) return;
+    struct mxcfb_update_data data;
+    memset(&data, 0, sizeof(data));
+    data.update_region.top = 0;
+    data.update_region.left = 0;
+    data.update_region.width = screen_width;
+    data.update_region.height = screen_height;
+    data.waveform_mode = WAVEFORM_MODE_GC16;
+    data.update_mode = UPDATE_MODE_FULL;
+    data.update_marker = 1;
+    data.temp = 0x1001;
+    data.flags = 0;
+    ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
+    uint32_t marker = 1;
+    ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
+}
+
+void refresh_screen_partial(void) {
+    if (fb_fd < 0) return;
+    struct mxcfb_update_data data;
+    memset(&data, 0, sizeof(data));
+    data.update_region.top = 0;
+    data.update_region.left = 0;
+    data.update_region.width = screen_width;
+    data.update_region.height = screen_height;
+    data.waveform_mode = WAVEFORM_MODE_GC4;
+    data.update_mode = UPDATE_MODE_PARTIAL;
+    data.update_marker = 2;
+    data.temp = 0x1001;
+    data.flags = 0;
+    ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
+    uint32_t marker = 2;
+    ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
+}
+
+#define KINDLEJAP_VERSION "1.2.4"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -510,6 +570,7 @@ void show_splash_init(void) {
     draw_text(50, 210, "[OK] Framebuffer ready", COLOR_BLACK, 1);
 
     draw_text(50, 240, "Testing input devices...", COLOR_DARK, 1);
+    refresh_screen();
 }
 
 void draw_taskbar(void) {
@@ -775,6 +836,7 @@ void redraw_screen(void) {
     draw_menu();
     draw_update_dialog();
     draw_update_progress();
+    refresh_screen_partial();
 }
 
 void handle_touch(int x, int y, int pressed) {
@@ -924,6 +986,7 @@ int main(int argc, char *argv[]) {
 
     draw_text(50, 290, "Checking for updates...", COLOR_DARK, 1);
     draw_text(50, 310, "Starting launcher...", COLOR_DARK, 1);
+    refresh_screen();
 
     menu_items[0].action = action_apps;
     menu_items[1].action = action_settings;
