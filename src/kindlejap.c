@@ -524,7 +524,7 @@ static const char *kb_rows_upper[3] = {
     "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"
 };
 static const char *kb_rows_sym[3] = {
-    ".,!?@#$%&*", "-+=/\\|~()", ";:'\"<>^"
+    "1234567890", ".,!?@#$%&*", "-+=/\\|~();:'\""
 };
 
 void keyboard_draw(void) {
