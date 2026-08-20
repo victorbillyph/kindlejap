@@ -16,7 +16,7 @@
 #include <math.h>
 #include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "2.6.1"
+#define KINDLEJAP_VERSION "2.6.2"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -1089,11 +1089,20 @@ static int browser_scroll = 0;
 #define BROWSER_MAX_LINKS 64
 #define BROWSER_CACHE "/tmp/kindlejap_browser_cache.html"
 
-static char *browser_lines[BROWSER_MAX_LINES];
+typedef enum { LINE_TEXT, LINE_H1, LINE_H2, LINE_H3, LINE_PARA, LINE_LIST, LINE_LINK, LINE_HR, LINE_PRE } LineType;
+
+typedef struct {
+    char *text;
+    LineType type;
+    int link_idx;
+} BrowserLine;
+
+static BrowserLine browser_lines[BROWSER_MAX_LINES];
 static int browser_line_count = 0;
 
 typedef struct {
     char url[256];
+    char label[128];
     int line;
 } BrowserLink;
 
@@ -1102,103 +1111,186 @@ static int browser_link_count = 0;
 
 static void browser_free_content(void) {
     for (int i = 0; i < browser_line_count; i++)
-        if (browser_lines[i]) { free(browser_lines[i]); browser_lines[i] = NULL; }
+        if (browser_lines[i].text) { free(browser_lines[i].text); browser_lines[i].text = NULL; }
     browser_line_count = 0;
     browser_link_count = 0;
     browser_scroll = 0;
 }
 
-static void browser_strip_tags(const char *html) {
+static void browser_emit(LineType type, const char *text) {
+    if (browser_line_count >= BROWSER_MAX_LINES || !text || strlen(text) == 0) return;
+    browser_lines[browser_line_count].text = strdup(text);
+    browser_lines[browser_line_count].type = type;
+    browser_lines[browser_line_count].link_idx = -1;
+    browser_line_count++;
+}
+
+static void browser_emit_empty(void) {
+    if (browser_line_count >= BROWSER_MAX_LINES) return;
+    browser_lines[browser_line_count].text = strdup("");
+    browser_lines[browser_line_count].type = LINE_PARA;
+    browser_lines[browser_line_count].link_idx = -1;
+    browser_line_count++;
+}
+
+static void browser_parse_html(const char *html) {
     browser_free_content();
-    int in_tag = 0;
-    int in_style = 0;
-    int in_script = 0;
-    int in_pre = 0;
-    int col = 0;
-    int max_cols = 130;
-    char line_buf[256] = "";
+    char text_buf[1024] = "";
+    int tcol = 0;
     const char *p = html;
+    int in_tag = 0;
+    int skip_content = 0;
+    char tag_name[32] = "";
+    int tag_len = 0;
+
+    char link_href[256] = "";
+    int link_active = 0;
 
     while (*p && browser_line_count < BROWSER_MAX_LINES) {
         if (*p == '<') {
-            if (strncasecmp(p, "<style", 6) == 0) in_style = 1;
-            else if (strncasecmp(p, "</style>", 8) == 0) in_style = 0;
-            else if (strncasecmp(p, "<script", 7) == 0) in_script = 1;
-            else if (strncasecmp(p, "</script>", 9) == 0) in_script = 0;
-            else if (strncasecmp(p, "<pre", 4) == 0) in_pre = 1;
-            else if (strncasecmp(p, "</pre>", 6) == 0) in_pre = 0;
-
-            if (!in_pre && !in_style && !in_script) {
-                if (strncasecmp(p, "<br", 3) == 0 || strncasecmp(p, "<p>", 3) == 0 ||
-                    strncasecmp(p, "<p ", 3) == 0 || strncasecmp(p, "<div", 4) == 0 ||
-                    strncasecmp(p, "<li", 3) == 0 || strncasecmp(p, "<h", 2) == 0 ||
-                    strncasecmp(p, "<tr", 3) == 0 || strncasecmp(p, "<hr", 3) == 0) {
-                    if (col > 0) {
-                        line_buf[col] = 0;
-                        browser_lines[browser_line_count++] = strdup(line_buf);
-                        col = 0;
-                    }
+            if (tcol > 0 && !skip_content) {
+                text_buf[tcol] = 0;
+                if (link_active && browser_link_count < BROWSER_MAX_LINKS) {
+                    strncpy(browser_links[browser_link_count].label, text_buf, 127);
                 }
             }
-
-            if (strncasecmp(p, "<a ", 3) == 0 && browser_link_count < BROWSER_MAX_LINKS) {
-                const char *href = strstr(p, "href=\"");
-                if (href) {
-                    href += 6;
-                    const char *end = strchr(href, '"');
-                    if (end && (end - href) > 0 && (end - href) < 255) {
-                        int l = end - href;
-                        strncpy(browser_links[browser_link_count].url, href, l);
-                        browser_links[browser_link_count].url[l] = 0;
-                        browser_links[browser_link_count].line = browser_line_count;
-                        browser_link_count++;
-                    }
-                }
-            }
-
             in_tag = 1;
+            tag_len = 0;
+            tag_name[0] = 0;
             p++;
             continue;
         }
-        if (*p == '>') { in_tag = 0; p++; continue; }
-        if (in_tag || in_style || in_script) { p++; continue; }
+        if (*p == '>') {
+            in_tag = 0;
+            tag_name[tag_len] = 0;
+            /* trim to first word only */
+            char *sp = strchr(tag_name, ' ');
+            if (sp) { *sp = 0; tag_len = sp - tag_name; }
+
+            if (tag_len > 0 && tag_name[0] != '/') {
+                int is_block = 0;
+                if (strncasecmp(tag_name, "p", 1) == 0 || strncasecmp(tag_name, "div", 3) == 0 ||
+                    strncasecmp(tag_name, "br", 2) == 0 || strncasecmp(tag_name, "li", 2) == 0 ||
+                    strncasecmp(tag_name, "tr", 2) == 0 || strncasecmp(tag_name, "hr", 2) == 0 ||
+                    strncasecmp(tag_name, "pre", 3) == 0) is_block = 1;
+
+                if (tcol > 0 && !skip_content && is_block) {
+                    text_buf[tcol] = 0;
+                    if (tcol > 0) {
+                        LineType lt = LINE_TEXT;
+                        if (link_active && browser_link_count < BROWSER_MAX_LINKS) {
+                            strncpy(browser_links[browser_link_count].label, text_buf, 127);
+                            lt = LINE_LINK;
+                            browser_lines[browser_line_count].link_idx = browser_link_count;
+                            browser_link_count++;
+                        }
+                        browser_emit(lt, text_buf);
+                    }
+                    tcol = 0;
+                }
+
+                if (strncasecmp(tag_name, "h1", 2) == 0 || strncasecmp(tag_name, "h2", 2) == 0 ||
+                    strncasecmp(tag_name, "h3", 2) == 0 || strncasecmp(tag_name, "h4", 2) == 0) {
+                    if (browser_line_count > 0) browser_emit_empty();
+                }
+                if (strncasecmp(tag_name, "li", 2) == 0) {
+                    if (tcol == 0 && !skip_content) { text_buf[tcol++] = '*'; text_buf[tcol++] = ' '; }
+                }
+                if (strncasecmp(tag_name, "hr", 2) == 0) {
+                    if (tcol > 0) { text_buf[tcol] = 0; browser_emit(LINE_TEXT, text_buf); tcol = 0; }
+                    browser_emit(LINE_HR, "---");
+                }
+                if (strncasecmp(tag_name, "a ", 2) == 0 && browser_link_count < BROWSER_MAX_LINKS) {
+                    const char *href = strstr(p - tag_len, "href=\"");
+                    if (href) {
+                        href += 6;
+                        const char *end = strchr(href, '"');
+                        if (end && (end - href) > 0 && (end - href) < 255) {
+                            int l = end - href;
+                            strncpy(browser_links[browser_link_count].url, href, l);
+                            browser_links[browser_link_count].url[l] = 0;
+                            browser_links[browser_link_count].line = browser_line_count;
+                            link_active = 1;
+                        }
+                    }
+                }
+                if (strncasecmp(tag_name, "style", 5) == 0 || strncasecmp(tag_name, "script", 6) == 0)
+                    skip_content = 1;
+            }
+
+            if (tag_len > 0 && tag_name[0] == '/') {
+                char *closing = tag_name + 1;
+                if (tcol > 0 && !skip_content) {
+                    text_buf[tcol] = 0;
+                    LineType lt = LINE_TEXT;
+                    if (link_active && browser_link_count < BROWSER_MAX_LINKS) {
+                        strncpy(browser_links[browser_link_count].label, text_buf, 127);
+                        lt = LINE_LINK;
+                        browser_lines[browser_line_count].link_idx = browser_link_count;
+                        browser_link_count++;
+                        link_active = 0;
+                    }
+                    if (strncasecmp(closing, "h1", 2) == 0) lt = LINE_H1;
+                    else if (strncasecmp(closing, "h2", 2) == 0) lt = LINE_H2;
+                    else if (strncasecmp(closing, "h3", 3) == 0) lt = LINE_H3;
+                    else if (strncasecmp(closing, "p", 1) == 0) lt = LINE_PARA;
+                    else if (strncasecmp(closing, "pre", 3) == 0) lt = LINE_PRE;
+                    else if (strncasecmp(closing, "li", 2) == 0) lt = LINE_LIST;
+                    browser_emit(lt, text_buf);
+                    tcol = 0;
+                }
+                if (strncasecmp(closing, "h1", 2) == 0 || strncasecmp(closing, "h2", 2) == 0 ||
+                    strncasecmp(closing, "h3", 2) == 0 || strncasecmp(closing, "h4", 2) == 0) {
+                    browser_emit_empty();
+                }
+                if (strncasecmp(closing, "style", 5) == 0 || strncasecmp(closing, "script", 6) == 0)
+                    skip_content = 0;
+            }
+            p++;
+            continue;
+        }
+        if (in_tag) {
+            if (tag_len < 31) tag_name[tag_len++] = *p;
+            p++; continue;
+        }
+        if (skip_content) { p++; continue; }
 
         if (*p == '&') {
-            if (strncasecmp(p, "&amp;", 5) == 0) { if (col < max_cols-1) line_buf[col++] = '&'; p += 5; }
-            else if (strncasecmp(p, "&lt;", 4) == 0) { if (col < max_cols-1) line_buf[col++] = '<'; p += 4; }
-            else if (strncasecmp(p, "&gt;", 4) == 0) { if (col < max_cols-1) line_buf[col++] = '>'; p += 4; }
-            else if (strncasecmp(p, "&nbsp;", 6) == 0) { if (col < max_cols-1) line_buf[col++] = ' '; p += 6; }
-            else if (strncasecmp(p, "&quot;", 6) == 0) { if (col < max_cols-1) line_buf[col++] = '"'; p += 6; }
-            else { if (col < max_cols-1) line_buf[col++] = *p; p++; }
+            char ent = 0;
+            if (strncasecmp(p, "&amp;", 5) == 0) { ent = '&'; p += 5; }
+            else if (strncasecmp(p, "&lt;", 4) == 0) { ent = '<'; p += 4; }
+            else if (strncasecmp(p, "&gt;", 4) == 0) { ent = '>'; p += 4; }
+            else if (strncasecmp(p, "&nbsp;", 6) == 0) { ent = ' '; p += 6; }
+            else if (strncasecmp(p, "&quot;", 6) == 0) { ent = '"'; p += 6; }
+            else if (strncasecmp(p, "&apos;", 6) == 0) { ent = '\''; p += 6; }
+            else if (strncasecmp(p, "&mdash;", 7) == 0) { ent = '-'; p += 7; }
+            else if (strncasecmp(p, "&ndash;", 7) == 0) { ent = '-'; p += 7; }
+            else if (strncasecmp(p, "&hellip;", 8) == 0) { strncpy(text_buf+tcol, "...", 3); tcol += 3; p += 8; continue; }
+            else if (strncasecmp(p, "&rsquo;", 7) == 0 || strncasecmp(p, "&lsquo;", 7) == 0) { ent = '\''; p += 7; }
+            else if (strncasecmp(p, "&rdquo;", 7) == 0 || strncasecmp(p, "&ldquo;", 7) == 0) { ent = '"'; p += 7; }
+            else { if (tcol < 1022) text_buf[tcol++] = *p; p++; continue; }
+            if (tcol < 1022) text_buf[tcol++] = ent;
             continue;
         }
 
-        if (*p == '\n' || *p == '\r') {
-            if (in_pre && col > 0) {
-                line_buf[col] = 0;
-                browser_lines[browser_line_count++] = strdup(line_buf);
-                col = 0;
-            }
-            p++; continue;
-        }
+        if (*p == '\n' || *p == '\r') { p++; continue; }
 
-        if (!in_pre && *p == ' ' && col == 0) { p++; continue; }
+        if (tcol == 0 && *p == ' ') { p++; continue; }
 
-        if (col < max_cols - 1) {
-            line_buf[col++] = *p;
-        } else if (!in_pre) {
-            line_buf[col] = 0;
-            browser_lines[browser_line_count++] = strdup(line_buf);
-            col = 0;
-            if (*p != ' ') {
-                line_buf[col++] = *p;
-            }
-        }
+        if (tcol < 1022) text_buf[tcol++] = *p;
         p++;
     }
-    if (col > 0 && browser_line_count < BROWSER_MAX_LINES) {
-        line_buf[col] = 0;
-        browser_lines[browser_line_count++] = strdup(line_buf);
+
+    if (tcol > 0 && browser_line_count < BROWSER_MAX_LINES) {
+        text_buf[tcol] = 0;
+        LineType lt = LINE_TEXT;
+        if (link_active && browser_link_count < BROWSER_MAX_LINKS) {
+            strncpy(browser_links[browser_link_count].label, text_buf, 127);
+            lt = LINE_LINK;
+            browser_lines[browser_line_count].link_idx = browser_link_count;
+            browser_link_count++;
+        }
+        browser_emit(lt, text_buf);
     }
 }
 
@@ -1219,7 +1311,7 @@ static void browser_load_url(const char *url) {
     if (html) {
         int n = fread(html, 1, sz, f);
         html[n] = 0;
-        browser_strip_tags(html);
+        browser_parse_html(html);
         free(html);
     }
     fclose(f);
@@ -1244,27 +1336,66 @@ static void browser_draw(int x, int y, int w, int h) {
         return;
     }
     int iy = y + 56;
-    int line_h = 16;
-    int visible = (h - 66) / line_h;
-    if (browser_scroll > browser_line_count - visible) browser_scroll = browser_line_count - visible;
+    int max_y = y + h - 4;
+    int max_scroll = browser_line_count;
+    if (max_scroll > 0 && browser_scroll > max_scroll - 10) browser_scroll = max_scroll - 10;
     if (browser_scroll < 0) browser_scroll = 0;
-    for (int i = browser_scroll; i < browser_line_count && iy < y + h - 4; i++) {
-        int is_link = 0;
-        for (int j = 0; j < browser_link_count; j++)
-            if (browser_links[j].line == i) { is_link = 1; break; }
-        unsigned char color = is_link ? COLOR_MID : COLOR_BLACK;
-        draw_text(x+10, iy, browser_lines[i], color, 1);
-        if (is_link) {
-            int tw2 = text_width(browser_lines[i], 1);
-            draw_rect(x+10, iy+12, tw2, 1, COLOR_MID);
+    for (int i = browser_scroll; i < browser_line_count && iy < max_y; i++) {
+        BrowserLine *bl = &browser_lines[i];
+        if (!bl->text || strlen(bl->text) == 0) {
+            iy += 10;
+            continue;
         }
-        iy += line_h;
+        switch (bl->type) {
+            case LINE_H1:
+                draw_text(x+10, iy, bl->text, COLOR_BLACK, 3);
+                iy += 28;
+                iy += 6;
+                break;
+            case LINE_H2:
+                draw_text(x+10, iy, bl->text, COLOR_BLACK, 2);
+                iy += 22;
+                iy += 4;
+                break;
+            case LINE_H3:
+            case LINE_H4:
+                draw_text(x+10, iy, bl->text, COLOR_DARK, 2);
+                iy += 20;
+                iy += 4;
+                break;
+            case LINE_HR:
+                draw_rect(x+10, iy+6, w-20, 2, COLOR_MID);
+                iy += 16;
+                break;
+            case LINE_LIST:
+                draw_text(x+10, iy, bl->text, COLOR_BLACK, 1);
+                iy += 16;
+                break;
+            case LINE_LINK:
+                draw_text(x+10, iy, bl->text, COLOR_MID, 1);
+                { int tw2 = text_width(bl->text, 1);
+                  draw_rect(x+10, iy+12, tw2, 1, COLOR_MID); }
+                iy += 16;
+                break;
+            case LINE_PRE:
+                draw_text(x+10, iy, bl->text, COLOR_DARK, 1);
+                iy += 16;
+                break;
+            case LINE_PARA:
+                iy += 8;
+                break;
+            case LINE_TEXT:
+            default:
+                draw_text(x+10, iy, bl->text, COLOR_BLACK, 1);
+                iy += 16;
+                break;
+        }
     }
     if (browser_scroll > 0) {
         draw_rounded_rect(x+w-40, y+h-40, 30, 30, 8, COLOR_LIGHT);
         draw_text_centered_in(x+w-40, y+h-34, 30, "^", COLOR_BLACK, 2);
     }
-    if (browser_scroll < browser_line_count - visible) {
+    if (browser_scroll < max_scroll - 10) {
         draw_rounded_rect(x+10, y+h-40, 30, 30, 8, COLOR_LIGHT);
         draw_text_centered_in(x+10, y+h-34, 30, "v", COLOR_BLACK, 2);
     }

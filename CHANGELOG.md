@@ -2,6 +2,18 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.6.2] - 2026-08-20
+
+### Improved
+- Browser now renders structured HTML: headings (h1/h2/h3) in larger fonts
+- Paragraph spacing between blocks
+- List items with bullet prefix
+- Horizontal rules as lines
+- Links shown in gray with underline
+- `<style>`, `<script>`, `<pre>` properly skipped
+- Proper HTML entity support (&mdash;, &hellip;, &rsquo;, etc.)
+- Fixed tag parser to handle attributes correctly
+
 ## [2.6.1] - 2026-08-20
 
 ### Fixed
