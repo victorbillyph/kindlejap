@@ -2,6 +2,20 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [1.2.0] - 2026-08-19
+
+### Fixed
+- Properly hide Kindle UI using `initctl stop lab126_gui` and related services
+- Fix touch input by scanning all `/dev/input/event*` devices
+- Use `setsid` in menu.json to survive framework shutdown
+
+### Added
+- Splash screen with app name centered on startup
+- Initialization status display (testing framebuffer, input, updates)
+- Kill previous instance before starting (lock file mechanism)
+- Restore Kindle UI on exit
+- Disable screensaver while app is running
+
 ## [1.1.2] - 2026-08-19
 
 ### Fixed

@@ -6,7 +6,8 @@
 		"exitmenu": true,
 		"refresh": false,
 		"status": false,
-		"action": "./bin/kindlejap.sh"
+		"action": "setsid ./bin/kindlejap.sh",
+		"internal": "status Starting KindleJap..."
 	}
 	]
 }

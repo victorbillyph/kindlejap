@@ -1,19 +1,26 @@
 #!/bin/sh
 # KindleJap - KUAL Extension Entry Point
-# This script is called by KUAL to start the launcher
+# Hides Kindle UI, kills previous instances, launches launcher
 
-# Get the extension directory
 EXTDIR="$(dirname "$0")/.."
-cd "$EXTDIR"
+cd "$EXTDIR" || exit 1
 
-# Stop Kindle UI services to take over the screen
-/usr/bin/lipc-set-prop com.lab126.winbroker appSwitcherDisable true 2>/dev/null
-
-# Kill any existing instances
+# Kill any previous instance
 killall kindlejap-bin 2>/dev/null
+sleep 0.5
 
-# Start the launcher
-./bin/kindlejap-bin
+# Prevent screensaver
+lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
 
-# When the launcher exits, restore Kindle UI
-/usr/bin/lipc-set-prop com.lab126.winbroker appSwitcherDisable false 2>/dev/null
+# Stop Kindle UI services (do NOT stop: framework, powerd, lab126)
+initctl stop lab126_gui 2>/dev/null
+initctl stop otaupd 2>/dev/null
+initctl stop phd 2>/dev/null
+initctl stop tmd 2>/dev/null
+initctl stop todo 2>/dev/null
+initctl stop mcsd 2>/dev/null
+
+sleep 0.3
+
+# Launch the binary
+exec ./bin/kindlejap-bin
