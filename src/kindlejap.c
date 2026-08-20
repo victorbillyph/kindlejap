@@ -16,7 +16,7 @@
 #include <math.h>
 #include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "2.3.0"
+#define KINDLEJAP_VERSION "2.4.0"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -640,16 +640,78 @@ void app_close_active(void) {
 
 static int menu_visible = 0;
 
+#define MAX_NOTIFICATIONS 16
+#define NOTIF_SIDEBAR_W 400
+
+typedef struct {
+    char title[128];
+    char message[256];
+    char action_label[64];
+    int has_action;
+    int active;
+} Notification;
+
+static Notification notifications[MAX_NOTIFICATIONS];
+static int notif_count = 0;
+static int notif_sidebar_visible = 0;
+static int notif_scroll = 0;
+
+static int notif_get_active(void) {
+    int c = 0;
+    for (int i = 0; i < notif_count; i++)
+        if (notifications[i].active) c++;
+    return c;
+}
+
+static void notif_add(const char *title, const char *message, const char *action_label) {
+    if (notif_count >= MAX_NOTIFICATIONS) {
+        for (int i = 0; i < notif_count - 1; i++)
+            notifications[i] = notifications[i+1];
+        notif_count--;
+    }
+    memset(&notifications[notif_count], 0, sizeof(Notification));
+    strncpy(notifications[notif_count].title, title, 127);
+    strncpy(notifications[notif_count].message, message, 255);
+    if (action_label && strlen(action_label) > 0) {
+        strncpy(notifications[notif_count].action_label, action_label, 63);
+        notifications[notif_count].has_action = 1;
+    }
+    notifications[notif_count].active = 1;
+    notif_count++;
+    dirty = 1;
+}
+
+static void notif_dismiss(int idx) {
+    if (idx >= 0 && idx < notif_count) {
+        notifications[idx].active = 0;
+        dirty = 1;
+    }
+}
+
+static void notif_clear_all(void) {
+    for (int i = 0; i < notif_count; i++)
+        notifications[i].active = 0;
+    dirty = 1;
+}
+
 static void topbar_draw(void) {
     draw_rect(0, 0, screen_width, TOPBAR_H, COLOR_DARK);
+    int wifi = read_wifi();
+    draw_text(16, 10, wifi ? "WiFi" : "---", COLOR_WHITE, 2);
+    int nc = notif_get_active();
+    int nx = screen_width - 120;
+    draw_text(nx, 10, "[!]", COLOR_WHITE, 2);
+    if (nc > 0) {
+        char nstr[8]; snprintf(nstr, sizeof(nstr), "%d", nc);
+        draw_rounded_rect(nx + 32, 6, text_width(nstr, 2) + 12, 24, 12, COLOR_WHITE);
+        draw_text(nx + 38, 10, nstr, COLOR_DARK, 2);
+    }
     int bat = read_battery();
     if (bat >= 0) {
         char bstr[16]; snprintf(bstr, sizeof(bstr), "%d%%", bat);
         int bw = text_width(bstr, 2);
         draw_text(screen_width - bw - 16, 10, bstr, COLOR_WHITE, 2);
     }
-    int wifi = read_wifi();
-    draw_text(16, 10, wifi ? "WiFi" : "---", COLOR_WHITE, 2);
 }
 
 static void downbar_draw(void) {
@@ -714,6 +776,67 @@ static void menu_handle_touch(int tx, int ty) {
     int iy6 = my+10+6*46;
     if (point_in_rect(tx, ty, mx+10, iy6, mw-20, 40)) {
         menu_visible=0;
+    }
+}
+
+static void notif_sidebar_draw(void) {
+    if (!notif_sidebar_visible) return;
+    int sx = screen_width - NOTIF_SIDEBAR_W;
+    draw_rect(sx, 0, NOTIF_SIDEBAR_W, screen_height, COLOR_LIGHTER);
+    draw_rounded_rect(sx+10, 10, NOTIF_SIDEBAR_W-20, 40, 8, COLOR_WHITE);
+    draw_text_centered_in(sx+10, 18, NOTIF_SIDEBAR_W-20, "Notifications", COLOR_BLACK, 2);
+    int nc = notif_get_active();
+    if (nc > 0) {
+        draw_rounded_rect(sx+NOTIF_SIDEBAR_W-80, 10, 70, 40, 8, COLOR_MID);
+        draw_text_centered_in(sx+NOTIF_SIDEBAR_W-80, 18, 70, "Clear", COLOR_WHITE, 2);
+    }
+    int iy = 60;
+    int shown = 0;
+    for (int i = notif_count - 1; i >= 0 && iy < screen_height - 10; i--) {
+        if (!notifications[i].active) continue;
+        if (shown < notif_scroll) { shown++; continue; }
+        shown++;
+        int card_h = notifications[i].has_action ? 100 : 70;
+        draw_rounded_rect(sx+10, iy, NOTIF_SIDEBAR_W-20, card_h, 8, COLOR_WHITE);
+        draw_text(sx+18, iy+8, notifications[i].title, COLOR_BLACK, 2);
+        draw_text(sx+18, iy+30, notifications[i].message, COLOR_DARK, 1);
+        if (notifications[i].has_action) {
+            draw_rounded_rect(sx+10, iy+55, NOTIF_SIDEBAR_W-40, 32, 8, COLOR_MID);
+            draw_text_centered_in(sx+10, iy+61, NOTIF_SIDEBAR_W-40, notifications[i].action_label, COLOR_WHITE, 2);
+        }
+        iy += card_h + 8;
+    }
+    if (nc == 0) {
+        draw_text_centered_in(sx, screen_height/2, NOTIF_SIDEBAR_W, "No notifications", COLOR_MID, 2);
+    }
+}
+
+static void notif_sidebar_handle(int tx, int ty) {
+    int sx = screen_width - NOTIF_SIDEBAR_W;
+    if (!point_in_rect(tx, ty, sx, 0, NOTIF_SIDEBAR_W, screen_height)) {
+        notif_sidebar_visible = 0; return;
+    }
+    if (notif_get_active() > 0 && point_in_rect(tx, ty, sx+NOTIF_SIDEBAR_W-80, 10, 70, 40)) {
+        notif_clear_all(); return;
+    }
+    int iy = 60;
+    int shown = 0;
+    for (int i = notif_count - 1; i >= 0; i--) {
+        if (!notifications[i].active) continue;
+        if (shown < notif_scroll) { shown++; continue; }
+        shown++;
+        int card_h = notifications[i].has_action ? 100 : 70;
+        if (notifications[i].has_action && point_in_rect(tx, ty, sx+10, iy+55, NOTIF_SIDEBAR_W-40, 32)) {
+            notif_dismiss(i);
+            dirty = 1;
+            return;
+        }
+        if (point_in_rect(tx, ty, sx+10, iy, NOTIF_SIDEBAR_W-20, card_h)) {
+            notif_dismiss(i);
+            dirty = 1;
+            return;
+        }
+        iy += card_h + 8;
     }
 }
 
@@ -1291,6 +1414,7 @@ int main(void) {
     kual_scan_apps();
     community_scan_apps();
     pkg_load_installed();
+    notif_add("Welcome", "KindleJap v" KINDLEJAP_VERSION " ready", "Dismiss");
     int saved_app = data_load_appstate();
     if (saved_app >= 0 && saved_app < 5) {
         const char *names[] = {"Calculator", "Files", "Network", "Browser", "Package Manager"};
@@ -1327,6 +1451,10 @@ int main(void) {
                         }
                         if (downbar_visible) { downbar_handle_touch(touch_x, touch_y); continue; }
                         if (menu_visible) { menu_handle_touch(touch_x, touch_y); continue; }
+                        if (notif_sidebar_visible) { notif_sidebar_handle(touch_x, touch_y); continue; }
+                        if (touch_y < TOPBAR_H && touch_x >= screen_width - 120 && touch_x < screen_width - 80) {
+                            notif_sidebar_visible = !notif_sidebar_visible; continue;
+                        }
                         if (active_app_idx >= 0 && active_app_idx < open_count)
                             open_apps[active_app_idx]->on_touch(touch_x, touch_y, 1);
                     }
@@ -1359,6 +1487,7 @@ int main(void) {
         topbar_draw();
         downbar_draw();
         menu_draw();
+        notif_sidebar_draw();
         if (keyboard_visible) keyboard_draw();
         update_draw();
         refresh_screen();

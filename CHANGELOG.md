@@ -2,6 +2,16 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.4.0] - 2026-08-20
+
+### Added
+- Notification system — topbar shows [!] icon with badge count
+- Tap notification icon to open sidebar with all notifications
+- Notifications support action buttons
+- Tap notification or action to dismiss
+- Clear All button in sidebar
+- `notif_add()` API for apps to create notifications
+
 ## [2.3.0] - 2026-08-20
 
 ### Added
