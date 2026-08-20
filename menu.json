@@ -1,12 +1,12 @@
 {
-    "items": [
-        {
-            "name": "KindleJap",
-            "priority": 1,
-            "exitmenu": true,
-            "refresh": false,
-            "status": false,
-            "action": "./bin/kindlejap.sh"
-        }
-    ]
+	"items": [
+	{
+		"name": "KindleJap",
+		"priority": 1,
+		"exitmenu": true,
+		"refresh": false,
+		"status": false,
+		"action": "./bin/kindlejap.sh"
+	}
+	]
 }
