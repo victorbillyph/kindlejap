@@ -15,7 +15,7 @@
 #include <errno.h>
 #include <time.h>
 
-#define KINDLEJAP_VERSION "1.2.1"
+#define KINDLEJAP_VERSION "1.2.3"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -671,12 +671,17 @@ void action_settings(void) {
 
 void *check_updates_thread(void *arg) {
     (void)arg;
+    log_msg("update_thread: checking for updates");
     int result = check_for_updates();
+    char buf[64];
+    snprintf(buf, sizeof(buf), "update_thread: result=%d", result);
+    log_msg(buf);
     if (result == 1) {
         show_update_dialog = 1;
         update_available = 1;
         redraw_screen();
     }
+    log_msg("update_thread: done");
     return NULL;
 }
 
@@ -840,8 +845,11 @@ void handle_touch(int x, int y, int pressed) {
 
 void process_input(void) {
     struct input_event ev;
+    int bytes;
 
-    while (read(input_fd, &ev, sizeof(ev)) > 0) {
+    while ((bytes = read(input_fd, &ev, sizeof(ev))) > 0) {
+        if (bytes != sizeof(ev)) continue;
+
         if (ev.type == EV_ABS) {
             if (ev.code == ABS_MT_POSITION_X) {
                 touch_last_x = ev.value;
@@ -854,13 +862,18 @@ void process_input(void) {
             }
         } else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
             handle_touch(touch_last_x, touch_last_y, ev.value);
-        } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
         }
     }
 }
 
 void signal_handler(int sig) {
-    (void)sig;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "SIGNAL %d received", sig);
+    log_msg(buf);
+    if (sig == SIGSEGV) {
+        log_msg("SEGFAULT! Crashing.");
+        _exit(1);
+    }
     running = 0;
 }
 
@@ -874,6 +887,9 @@ int main(int argc, char *argv[]) {
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGSEGV, signal_handler);
+    signal(SIGBUS, signal_handler);
+    signal(SIGABRT, signal_handler);
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -926,9 +942,14 @@ int main(int argc, char *argv[]) {
 
     log_msg("main: entering main loop");
 
+    int loop_count = 0;
     while (running) {
         if (input_fd >= 0) {
             process_input();
+        }
+        loop_count++;
+        if (loop_count % 200 == 0) {
+            log_msg("main: loop alive");
         }
         usleep(50000);
     }
