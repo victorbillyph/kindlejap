@@ -490,6 +490,7 @@ static void net_draw(int x, int y, int w, int h);
 static void net_handle(int x, int y, int released);
 static void browser_draw(int x, int y, int w, int h);
 static void browser_handle(int x, int y, int released);
+static void check_update(void);
 
 static App calc_app = {"Calculator", NULL, calc_draw, calc_handle, NULL};
 static App file_app = {"Files", NULL, file_draw, file_handle, NULL};
