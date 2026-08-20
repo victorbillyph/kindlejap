@@ -33,9 +33,12 @@ jobs:
       - name: Create release package
         run: |
           mkdir -p release/kindlejap/bin
+          mkdir -p release/kindlejap/sdk
+          mkdir -p release/kindlejap/apps
           cp bin/kindlejap-bin release/kindlejap/bin/
           cp bin/kindlejap.sh release/kindlejap/bin/
           cp bin/update.sh release/kindlejap/bin/
+          cp sdk/kindlejap.py release/kindlejap/sdk/
           cp config.xml release/kindlejap/
           cp menu.json release/kindlejap/
           cp Makefile release/kindlejap/

@@ -26,6 +26,9 @@
 #define APPSTATE_FILE "/mnt/us/extensions/kindlejap/data/appstate.cfg"
 #define SETUP_DONE_FILE "/mnt/us/extensions/kindlejap/data/setup_done"
 #define COMMUNITY_APPS_DIR "/mnt/us/kindlejap_apps"
+#define PY_SDK_DIR "/mnt/us/extensions/kindlejap/sdk"
+#define PY_APPS_DIR "/mnt/us/extensions/kindlejap/apps"
+#define MAX_PYTHON_APPS 16
 #define TOPBAR_H 40
 #define KEYBOARD_H 360
 #define FONT_W 8
@@ -668,6 +671,69 @@ void app_close_active(void) {
     if (active_app_idx >= 0 && active_app_idx < open_count) app_close_idx(active_app_idx);
 }
 
+typedef struct {
+    char name[64];
+    char path[256];
+    pid_t pid;
+    int running;
+} PythonApp;
+
+static PythonApp py_apps[MAX_PYTHON_APPS];
+static int py_app_count = 0;
+static int py_active = -1;
+
+static void py_scan_apps(void) {
+    py_app_count = 0;
+    DIR *d = opendir(PY_APPS_DIR);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && py_app_count < MAX_PYTHON_APPS) {
+        if (e->d_name[0] == '.') continue;
+        int len = strlen(e->d_name);
+        if (len > 3 && strcmp(e->d_name + len - 3, ".py") == 0) {
+            strncpy(py_apps[py_app_count].name, e->d_name, 63);
+            py_apps[py_app_count].name[len - 3] = 0;
+            snprintf(py_apps[py_app_count].path, 255, "%s/%s", PY_APPS_DIR, e->d_name);
+            py_apps[py_app_count].pid = -1;
+            py_apps[py_app_count].running = 0;
+            py_app_count++;
+        }
+    }
+    closedir(d);
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Python apps: %d", py_app_count);
+    log_msg(msg);
+}
+
+static void py_launch(int idx) {
+    if (idx < 0 || idx >= py_app_count) return;
+    pid_t pid = fork();
+    if (pid == 0) {
+        setenv("PYTHONPATH", PY_SDK_DIR, 1);
+        execl("/usr/bin/python", "python", py_apps[idx].path, (char *)NULL);
+        execl("/usr/bin/python3", "python3", py_apps[idx].path, (char *)NULL);
+        _exit(1);
+    } else if (pid > 0) {
+        py_apps[idx].pid = pid;
+        py_apps[idx].running = 1;
+        py_active = idx;
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Python app started: %s (pid %d)", py_apps[idx].name, pid);
+        log_msg(msg);
+    }
+}
+
+static void py_kill_active(void) {
+    if (py_active >= 0 && py_active < py_app_count && py_apps[py_active].running) {
+        kill(py_apps[py_active].pid, SIGTERM);
+        waitpid(py_apps[py_active].pid, NULL, 0);
+        py_apps[py_active].running = 0;
+        py_apps[py_active].pid = -1;
+        log_msg("Python app stopped");
+    }
+    py_active = -1;
+}
+
 static int menu_visible = 0;
 
 #define MAX_NOTIFICATIONS 16
@@ -757,15 +823,33 @@ static void downbar_draw(void) {
 
 static void menu_draw(void) {
     if (!menu_visible) return;
-    int mw = 280, mh = 392;
-    int mx = (screen_width - mw) / 2, my = TOPBAR_H + 80;
+    int total = 5 + py_app_count + 2;
+    int mw = 280;
+    int mh = 20 + total * 46 + 10;
+    int mx = (screen_width - mw) / 2;
+    int my = TOPBAR_H + 40;
+    if (my + mh > screen_height - 10) my = screen_height - mh - 10;
     draw_rounded_rect(mx, my, mw, mh, CORNER_R, COLOR_WHITE);
-    const char *items[] = {"Calculator", "Files", "Network", "Browser", "Package Manager", "Check Update", "Close"};
-    for (int i=0; i<7; i++) {
-        int iy = my + 10 + i*46;
+    const char *builtin[] = {"Calculator", "Files", "Network", "Browser", "Package Manager"};
+    for (int i = 0; i < 5; i++) {
+        int iy = my + 10 + i * 46;
         draw_rounded_rect(mx+10, iy, mw-20, 40, 8, COLOR_LIGHT);
-        draw_text_centered_in(mx+10, iy+10, mw-20, items[i], COLOR_BLACK, 2);
+        draw_text_centered_in(mx+10, iy+10, mw-20, builtin[i], COLOR_BLACK, 2);
     }
+    for (int i = 0; i < py_app_count; i++) {
+        int iy = my + 10 + (5 + i) * 46;
+        draw_rounded_rect(mx+10, iy, mw-20, 40, 8, COLOR_LIGHT);
+        char label[80];
+        snprintf(label, sizeof(label), "[Py] %s", py_apps[i].name);
+        draw_text_centered_in(mx+10, iy+10, mw-20, label, COLOR_DARK, 2);
+    }
+    int ui = 5 + py_app_count;
+    int iy_up = my + 10 + ui * 46;
+    draw_rounded_rect(mx+10, iy_up, mw-20, 40, 8, COLOR_LIGHT);
+    draw_text_centered_in(mx+10, iy_up+10, mw-20, "Check Update", COLOR_BLACK, 2);
+    int iy_close = my + 10 + (ui + 1) * 46;
+    draw_rounded_rect(mx+10, iy_close, mw-20, 40, 8, COLOR_LIGHT);
+    draw_text_centered_in(mx+10, iy_close+10, mw-20, "Close", COLOR_BLACK, 2);
 }
 
 static void downbar_handle_touch(int tx, int ty) {
@@ -783,29 +867,43 @@ static void downbar_handle_touch(int tx, int ty) {
 }
 
 static void menu_handle_touch(int tx, int ty) {
-    int mw=280, mh=392;
-    int mx=(screen_width-mw)/2, my=TOPBAR_H+80;
-    if (!point_in_rect(tx, ty, mx, my, mw, mh)) { menu_visible=0; return; }
+    int total = 5 + py_app_count + 2;
+    int mw = 280;
+    int mh = 20 + total * 46 + 10;
+    int mx = (screen_width - mw) / 2;
+    int my = TOPBAR_H + 40;
+    if (my + mh > screen_height - 10) my = screen_height - mh - 10;
+    if (!point_in_rect(tx, ty, mx, my, mw, mh)) { menu_visible = 0; return; }
     App *apps[] = {&calc_app, &file_app, &net_app, &browser_app};
-    for (int i=0; i<4; i++) {
-        int iy = my+10+i*46;
+    for (int i = 0; i < 4; i++) {
+        int iy = my + 10 + i * 46;
         if (point_in_rect(tx, ty, mx+10, iy, mw-20, 40)) {
-            app_open(apps[i]); menu_visible=0; return;
+            app_open(apps[i]); menu_visible = 0; return;
         }
     }
-    int iy4 = my+10+4*46;
+    int iy4 = my + 10 + 4 * 46;
     if (point_in_rect(tx, ty, mx+10, iy4, mw-20, 40)) {
-        app_open(&pkg_app); menu_visible=0; return;
+        app_open(&pkg_app); menu_visible = 0; return;
     }
-    int iy5 = my+10+5*46;
-    if (point_in_rect(tx, ty, mx+10, iy5, mw-20, 40)) {
-        menu_visible=0;
+    for (int i = 0; i < py_app_count; i++) {
+        int iy = my + 10 + (5 + i) * 46;
+        if (point_in_rect(tx, ty, mx+10, iy, mw-20, 40)) {
+            py_launch(i);
+            menu_visible = 0;
+            dirty = 1;
+            return;
+        }
+    }
+    int ui = 5 + py_app_count;
+    int iy_up = my + 10 + ui * 46;
+    if (point_in_rect(tx, ty, mx+10, iy_up, mw-20, 40)) {
+        menu_visible = 0;
         check_update();
         return;
     }
-    int iy6 = my+10+6*46;
-    if (point_in_rect(tx, ty, mx+10, iy6, mw-20, 40)) {
-        menu_visible=0;
+    int iy_close = my + 10 + (ui + 1) * 46;
+    if (point_in_rect(tx, ty, mx+10, iy_close, mw-20, 40)) {
+        menu_visible = 0;
     }
 }
 
@@ -2536,6 +2634,20 @@ static void community_scan_apps(void) {
     log_msg("Community apps scanned");
 }
 
+static int py_is_running(void) {
+    if (py_active < 0 || py_active >= py_app_count) return 0;
+    if (!py_apps[py_active].running) return 0;
+    int status;
+    pid_t result = waitpid(py_apps[py_active].pid, &status, WNOHANG);
+    if (result > 0) {
+        py_apps[py_active].running = 0;
+        py_apps[py_active].pid = -1;
+        py_active = -1;
+        return 0;
+    }
+    return 1;
+}
+
 static void handle_signal(int sig) { running = 0; }
 void handle_segfault(int sig) { log_msg("SEGFAULT"); restore_kindle_ui(); exit(1); }
 
@@ -2589,6 +2701,7 @@ int main(void) {
     sleep(1);
     kual_scan_apps();
     community_scan_apps();
+    py_scan_apps();
     pkg_load_installed();
     notif_add("Welcome", "KindleJap v" KINDLEJAP_VERSION " ready", "Dismiss");
     if (!setup_is_done()) {
@@ -2606,6 +2719,10 @@ int main(void) {
     int touch_x = 0, touch_y = 0;
     time_t last_save = 0;
     while (running) {
+        if (py_is_running()) {
+            usleep(200000);
+            continue;
+        }
         if (input_fd >= 0) {
             struct input_event ev;
             while (read(input_fd, &ev, sizeof(ev)) == sizeof(ev)) {
@@ -2648,6 +2765,11 @@ int main(void) {
             while (read(power_btn_fd, &pev, sizeof(pev)) == sizeof(pev)) {
                 if (pev.type == EV_KEY && pev.code == 116 && pev.value == 1) {
                     if (setup_active) continue;
+                    if (py_is_running()) {
+                        py_kill_active();
+                        dirty = 1;
+                        continue;
+                    }
                     dirty = 1;
                     if (menu_visible) { menu_visible = 0; }
                     else { downbar_visible = !downbar_visible; }
@@ -2683,6 +2805,7 @@ int main(void) {
     }
     for (int i=open_count-1; i>=0; i--)
         if (open_apps[i]->cleanup) open_apps[i]->cleanup();
+    py_kill_active();
     strncpy(settings.last_path, file_path, sizeof(settings.last_path)-1);
     strncpy(settings.browser_url, browser_url, sizeof(settings.browser_url)-1);
     settings.file_scroll = file_scroll;

@@ -2,6 +2,30 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [4.0.0] - 2026-08-20
+
+### Added
+- Python app development support — developers can now create apps in Python
+- Python SDK module (`sdk/kindlejap.py`) with full API:
+  - Framebuffer drawing: `draw_rect`, `draw_rounded_rect`, `draw_circle`, `draw_line`, `draw_text`, `draw_text_centered`, `draw_char`, `draw_bmp`, `draw_pgm`, `clear`
+  - Touch input: `get_events()` returning `{'type': 'touch', 'x': int, 'y': int}`
+  - Utility: `point_in_rect`, `text_width`, `set_dirty`, `refresh`, `wait`
+  - Constants: `COLOR_WHITE/BLACK/DARK/MID/LIGHT/LIGHTER`, `FONT_W/H`, `TOPBAR_H`, `KEYBOARD_H`
+  - `run(draw_fn, touch_fn, fps)` helper for simple main loop
+  - Signal handling for clean exit
+- Launcher detects `.py` files in `extensions/kindlejap/apps/` directory
+- Python apps appear in menu with `[Py]` prefix
+- Launcher automatically forks Python process and monitors it
+- Power button kills running Python app
+- Python apps get `PYTHONPATH` set to SDK directory automatically
+- `sdk/` directory included in release package
+- `apps/` directory created in release for user Python scripts
+
+### Changed
+- Menu dynamically adjusts height based on number of apps
+- Menu positioned to stay within screen bounds
+- Version bumped to 4.0.0 (major — new language support)
+
 ## [3.1.0] - 2026-08-20
 
 ### Added

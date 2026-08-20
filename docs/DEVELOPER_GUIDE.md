@@ -812,3 +812,127 @@ static App notes_app = {"Notes", notes_init, notes_draw, notes_handle, NULL};
 | `COLOR_DARK` | 0x30 | Dark gray |
 | `COLOR_MID` | 0xA0 | Medium gray |
 | `COLOR_LIGHT` | 0xE8 | Light gray |
+| `COLOR_LIGHTER` | 0xD0 | Lighter gray |
+
+---
+
+## Python App Development
+
+KindleJap supports apps written in Python. The SDK provides the same drawing and input primitives as the C API.
+
+### Setup
+
+1. Create a `.py` file in `extensions/kindlejap/apps/`
+2. Import the SDK: `import kindlejap as kj`
+3. The launcher automatically detects and lists your app in the menu
+
+### Python SDK API
+
+The module `kindlejap.py` is located at `extensions/kindlejap/sdk/kindlejap.py` and is added to `PYTHONPATH` automatically.
+
+#### Initialization
+
+```python
+import kindlejap as kj
+
+kj.init()           # Open framebuffer + touch
+kj.shutdown()       # Clean up (called automatically by kj.run)
+```
+
+#### Drawing
+
+| Function | Description |
+|----------|-------------|
+| `kj.draw_pixel(x, y, color)` | Single pixel |
+| `kj.draw_rect(x, y, w, h, color)` | Fill rectangle |
+| `kj.draw_rounded_rect(x, y, w, h, r, color)` | Rounded rectangle |
+| `kj.draw_circle(cx, cy, r, color)` | Fill circle |
+| `kj.draw_line(x0, y0, x1, y1, color)` | Line (Bresenham) |
+| `kj.draw_char(x, y, ch, color, scale)` | Single character |
+| `kj.draw_text(x, y, text, color, scale)` | Text left-aligned |
+| `kj.draw_text_centered(x, y, w, text, color, scale)` | Text centered in width |
+| `kj.draw_text_right(x_right, y, text, color, scale)` | Text right-aligned |
+| `kj.draw_bmp(path, ox, oy)` | Load 24-bit BMP |
+| `kj.draw_pgm(path, ox, oy)` | Load PGM image |
+| `kj.clear(color)` | Fill entire screen |
+
+#### Touch Input
+
+```python
+events = kj.get_events()
+for event in events:
+    if event['type'] == 'touch':
+        x, y = event['x'], event['y']
+        if kj.point_in_rect(x, y, btn_x, btn_y, btn_w, btn_h):
+            handle_button()
+```
+
+#### Constants
+
+| Constant | Value |
+|----------|-------|
+| `kj.COLOR_WHITE` | 0xFF |
+| `kj.COLOR_BLACK` | 0x00 |
+| `kj.COLOR_DARK` | 0x30 |
+| `kj.COLOR_MID` | 0xA0 |
+| `kj.COLOR_LIGHT` | 0xE8 |
+| `kj.COLOR_LIGHTER` | 0xD0 |
+| `kj.FONT_W` | 8 |
+| `kj.FONT_H` | 13 |
+| `kj.screen_width` | 1072 (after init) |
+| `kj.screen_height` | 1448 (after init) |
+
+#### Main Loop Helper
+
+```python
+kj.run(draw_fn=my_draw, touch_fn=my_touch, fps=20)
+```
+
+- `draw_fn()` — called every frame to draw
+- `touch_fn(x, y)` — called on touch release
+- `fps` — frames per second (default 20)
+- Handles init, loop, cleanup, and signal handling
+
+### Complete Python Example
+
+```python
+#!/usr/bin/env python
+import kindlejap as kj
+
+counter = 0
+
+def draw():
+    kj.clear(kj.COLOR_WHITE)
+    kj.draw_text_centered(0, 100, kj.screen_width, "Python Counter", kj.COLOR_BLACK, 4)
+    kj.draw_text_centered(0, 200, kj.screen_width, str(counter), kj.COLOR_BLACK, 5)
+    kj.draw_rounded_rect(kj.screen_width//2 - 100, 350, 200, 60, 10, kj.COLOR_LIGHT)
+    kj.draw_text_centered(kj.screen_width//2 - 100, 360, 200, "TAP HERE", kj.COLOR_BLACK, 2)
+
+def touch(x, y):
+    global counter
+    if kj.point_in_rect(x, y, kj.screen_width//2 - 100, 350, 200, 60):
+        counter += 1
+        kj.set_dirty()
+
+kj.run(draw_fn=draw, touch_fn=touch)
+```
+
+### Key Differences from C Apps
+
+| Feature | C Apps | Python Apps |
+|---------|--------|-------------|
+| File location | Built into launcher | `extensions/kindlejap/apps/*.py` |
+| SDK | C functions in `kindlejap.c` | `import kindlejap` module |
+| Topbar | Drawn by launcher | Not available (full screen) |
+| Keyboard | Built-in | Not available (use external) |
+| Notifications | `notif_add()` | Not available |
+| Launch | Direct function call | Forked subprocess |
+| Kill | Power button exits menu | Power button kills process |
+
+### Tips
+
+- Keep `draw()` fast — it runs every 50ms
+- Use `kj.set_dirty()` after state changes to trigger redraw
+- Python apps get the full screen — no topbar overlay
+- Test on device with `python extensions/kindlejap/apps/your_app.py`
+- The SDK handles framebuffer mapping, touch events, and cleanup automatically
