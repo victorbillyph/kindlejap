@@ -19,6 +19,22 @@
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
+#define LOGFILE "/mnt/us/kindlejap.log"
+
+static FILE *logfp = NULL;
+static int log_initialized = 0;
+
+void log_msg(const char *msg) {
+    if (!logfp) {
+        logfp = fopen(LOGFILE, "w");
+        log_initialized = 1;
+    }
+    if (logfp) {
+        fprintf(logfp, "%s\n", msg);
+        fflush(logfp);
+    }
+    printf("%s\n", msg);
+}
 
 struct fb_var_screeninfo vinfo;
 struct fb_fix_screeninfo finfo;
@@ -153,8 +169,12 @@ static const unsigned char font5x7[][7] = {
 };
 
 int acquire_lock(void) {
+    log_msg("acquire_lock: opening " LOCKFILE);
     int fd = open(LOCKFILE, O_CREAT | O_RDWR, 0644);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        log_msg("acquire_lock: failed to open lockfile");
+        return -1;
+    }
 
     struct flock fl;
     fl.l_type = F_WRLCK;
@@ -163,6 +183,7 @@ int acquire_lock(void) {
     fl.l_len = 0;
 
     if (fcntl(fd, F_SETLK, &fl) < 0) {
+        log_msg("acquire_lock: lock held by another process");
         close(fd);
         return -1;
     }
@@ -172,6 +193,7 @@ int acquire_lock(void) {
     ftruncate(fd, 0);
     write(fd, pid_str, strlen(pid_str));
 
+    log_msg("acquire_lock: lock acquired");
     return fd;
 }
 
@@ -191,19 +213,24 @@ void restore_kindle_ui(void) {
 }
 
 void init_framebuffer(void) {
+    log_msg("init_framebuffer: opening /dev/fb0");
     fb_fd = open("/dev/fb0", O_RDWR);
     if (fb_fd < 0) {
+        log_msg("init_framebuffer: FAILED to open /dev/fb0");
         perror("Failed to open framebuffer");
         exit(1);
     }
+    log_msg("init_framebuffer: /dev/fb0 opened");
 
     if (ioctl(fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
+        log_msg("init_framebuffer: FAILED to get screen info");
         perror("Failed to get screen info");
         close(fb_fd);
         exit(1);
     }
 
     if (ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0) {
+        log_msg("init_framebuffer: FAILED to get fixed screen info");
         perror("Failed to get fixed screen info");
         close(fb_fd);
         exit(1);
@@ -216,19 +243,26 @@ void init_framebuffer(void) {
     if (bytes_per_pixel < 1) bytes_per_pixel = 1;
 
     size_t mem_size = finfo.smem_len;
+    char buf[128];
+    snprintf(buf, sizeof(buf), "init_framebuffer: %dx%d %d bpp, line_length=%d, smem_len=%zu",
+             screen_width, screen_height, vinfo.bits_per_pixel, finfo.line_length, mem_size);
+    log_msg(buf);
+
     fb_mem = mmap(NULL, mem_size, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
     if (fb_mem == MAP_FAILED) {
+        log_msg("init_framebuffer: FAILED to mmap");
         perror("Failed to mmap framebuffer");
         close(fb_fd);
         exit(1);
     }
-
-    printf("Screen: %dx%d, %d bpp\n", screen_width, screen_height, vinfo.bits_per_pixel);
+    log_msg("init_framebuffer: mmap OK");
 }
 
 void init_input(void) {
+    log_msg("init_input: scanning /dev/input");
     DIR *dir = opendir("/dev/input");
     if (!dir) {
+        log_msg("init_input: cannot open /dev/input");
         fprintf(stderr, "Cannot open /dev/input\n");
         return;
     }
@@ -256,6 +290,9 @@ void init_input(void) {
         if (strstr(name, "Kindle")) score += 2;
 
         printf("Input %s: '%s' (score=%d)\n", entry->d_name, name, score);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "init_input: %s = '%s' score=%d", entry->d_name, name, score);
+        log_msg(buf);
 
         if (score > best_score) {
             if (best_fd >= 0) close(best_fd);
@@ -270,8 +307,9 @@ void init_input(void) {
 
     if (best_fd >= 0) {
         input_fd = best_fd;
-        printf("Using best input device (score=%d)\n", best_score);
+        log_msg("init_input: using best device");
     } else {
+        log_msg("init_input: NO input device found");
         fprintf(stderr, "Warning: No input device found\n");
     }
 }
@@ -830,30 +868,36 @@ int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
 
-    printf("KindleJap v" KINDLEJAP_VERSION " starting...\n");
+    log_msg("=== KindleJap v" KINDLEJAP_VERSION " ===");
+    log_msg("main: starting");
+    log_msg("main: log file: " LOGFILE);
+
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
     int lock_fd = acquire_lock();
     if (lock_fd < 0) {
-        printf("Another instance is running, killing it...\n");
+        log_msg("main: another instance running, killing it");
         system("killall kindlejap-bin 2>/dev/null");
         sleep(1);
         lock_fd = acquire_lock();
         if (lock_fd < 0) {
+            log_msg("main: FAILED to acquire lock");
             fprintf(stderr, "Failed to acquire lock\n");
             return 1;
         }
     }
 
+    log_msg("main: init_framebuffer");
     init_framebuffer();
 
+    log_msg("main: show_splash_init");
     show_splash_init();
 
-    draw_text(50, 210, "[OK] Framebuffer ready", COLOR_BLACK, 1);
-    draw_text(50, 240, "Testing input devices...", COLOR_DARK, 1);
-
+    log_msg("main: init_input");
     init_input();
 
     if (input_fd >= 0) {
@@ -873,13 +917,14 @@ int main(int argc, char *argv[]) {
 
     usleep(500000);
 
+    log_msg("main: redraw_screen");
     redraw_screen();
 
     pthread_t update_check_thread;
     pthread_create(&update_check_thread, NULL, check_updates_thread, NULL);
     pthread_detach(update_check_thread);
 
-    printf("KindleJap running.\n");
+    log_msg("main: entering main loop");
 
     while (running) {
         if (input_fd >= 0) {
@@ -888,8 +933,10 @@ int main(int argc, char *argv[]) {
         usleep(50000);
     }
 
+    log_msg("main: exiting");
     cleanup();
 
+    if (logfp) fclose(logfp);
     printf("KindleJap exited.\n");
     return 0;
 }

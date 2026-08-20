@@ -7,6 +7,9 @@ cd "$EXTDIR" || exit 1
 LOGFILE="/tmp/kindlejap.log"
 echo "$(date) KindleJap starting" > "$LOGFILE"
 
+# Clear old app log
+rm -f /mnt/us/kindlejap.log 2>/dev/null
+
 # Kill any previous instance
 killall kindlejap-bin 2>/dev/null
 sleep 0.5
