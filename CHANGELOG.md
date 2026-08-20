@@ -2,6 +2,22 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.1.0] - 2026-08-19
+
+### Fixed
+- Proper 8x13 bitmap font - digits now render correctly (no longer shown as letters)
+
+### Added
+- Rounded rectangle UI elements throughout
+- Mini popup start menu (swipe down from taskbar menu button)
+- Mini popup power menu (swipe down from taskbar power button)
+- Power button on taskbar
+- BMP image viewer (File Explorer opens .bmp files)
+- PGM image viewer (File Explorer opens .pgm files)
+- Clean white desktop background
+- MXCFB dual driver support (K51/PW3 Carta + Zelda/PW4+) with auto-detection
+- Calculator, File Explorer, Network, and Browser apps
+
 ## [2.0.0] - 2026-08-19
 
 ### Added
