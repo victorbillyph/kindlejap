@@ -41,8 +41,8 @@ clean:
 # Install to Kindle (via USB or SSH)
 install: build
 	@echo "To install:"
-	@echo "1. Create 'extensions/japlat' folder on Kindle"
-	@echo "2. Copy this entire folder to 'extensions/japlat'"
+	@echo "1. Create 'extensions/kindlejap' folder on Kindle"
+	@echo "2. Copy this entire folder to 'extensions/kindlejap'"
 	@echo "3. Restart KUAL or refresh extensions"
 
 # Development target for x86 testing (if on Linux)

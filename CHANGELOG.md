@@ -2,6 +2,14 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [1.1.2] - 2026-08-19
+
+### Fixed
+- Changed extension ID from `japlat` to `kindlejap` to match folder name
+- Updated all hardcoded paths to use `kindlejap` folder
+- Fixed release workflow to package as `kindlejap/` instead of `japlat/`
+- Updated README and Makefile with correct folder name
+
 ## [1.1.1] - 2026-08-19
 
 ### Fixed

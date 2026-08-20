@@ -32,16 +32,16 @@ jobs:
 
       - name: Create release package
         run: |
-          mkdir -p release/japlat/bin
-          cp bin/kindlejap-bin release/japlat/bin/
-          cp bin/kindlejap.sh release/japlat/bin/
-          cp bin/update.sh release/japlat/bin/
-          cp config.xml release/japlat/
-          cp menu.json release/japlat/
-          cp Makefile release/japlat/
-          cp README.md release/japlat/
-          cp LICENSE release/japlat/
-          cp CHANGELOG.md release/japlat/
+          mkdir -p release/kindlejap/bin
+          cp bin/kindlejap-bin release/kindlejap/bin/
+          cp bin/kindlejap.sh release/kindlejap/bin/
+          cp bin/update.sh release/kindlejap/bin/
+          cp config.xml release/kindlejap/
+          cp menu.json release/kindlejap/
+          cp Makefile release/kindlejap/
+          cp README.md release/kindlejap/
+          cp LICENSE release/kindlejap/
+          cp CHANGELOG.md release/kindlejap/
           cd release
           tar -czf ../kindlejap-${GITHUB_REF_NAME}.tar.gz *
 

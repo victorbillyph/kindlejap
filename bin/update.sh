@@ -3,7 +3,7 @@
 # Usage: update.sh [current_version] [download_url] or update.sh restart
 
 SCRIPT_DIR="$(dirname "$0")"
-EXTENSION_DIR="/mnt/us/extensions/japlat"
+EXTENSION_DIR="/mnt/us/extensions/kindlejap"
 TEMP_DIR="/tmp/kindlejap_update"
 DOWNLOAD_URL="https://github.com/victorbillyph/kindlejap/archive/refs/heads/master.zip"
 

@@ -14,12 +14,12 @@
 #include <pthread.h>
 
 // Version
-#define KINDLEJAP_VERSION "1.1.1"
+#define KINDLEJAP_VERSION "1.1.2"
 
 // GitHub API URL for releases
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_DOWNLOAD_URL "https://github.com/victorbillyph/kindlejap/archive/refs/heads/master.zip"
-#define UPDATE_SCRIPT "/mnt/us/extensions/japlat/bin/update.sh"
+#define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 
 // Framebuffer structures
 struct fb_var_screeninfo vinfo;

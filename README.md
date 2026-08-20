@@ -15,8 +15,8 @@ A custom launcher for Kindle devices, launched via KUAL (Kindle Unified Applicat
 
 1. Install KUAL on your Kindle device
 2. Download the latest release from [GitHub Releases](https://github.com/victorbillyph/kindlejap/releases)
-3. Extract the `japlat` folder to `/mnt/us/extensions/` on your Kindle
-4. The structure should be: `/mnt/us/extensions/japlat/config.xml`
+3. Extract the `kindlejap` folder to `/mnt/us/extensions/` on your Kindle
+4. The structure should be: `/mnt/us/extensions/kindlejap/config.xml`
 5. Restart KUAL or refresh extensions
 6. Launch "KindleJap" from the KUAL menu
 

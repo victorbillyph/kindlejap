@@ -2,9 +2,9 @@
 <extension>
     <information>
         <name>KindleJap</name>
-        <version>1.1.1</version>
+        <version>1.1.2</version>
         <author>victorbillyph</author>
-        <id>japlat</id>
+        <id>kindlejap</id>
     </information>
     <menus>
         <menu type="json" dynamic="true">
