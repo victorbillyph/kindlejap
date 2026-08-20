@@ -16,7 +16,7 @@
 #include <math.h>
 #include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "2.5.3"
+#define KINDLEJAP_VERSION "2.6.0"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -1082,15 +1082,212 @@ static void net_handle(int tx, int ty, int released) {
 
 static char browser_url[256] = "https://";
 static int browser_input_active = 0;
+static int browser_loading = 0;
+static int browser_scroll = 0;
+
+#define BROWSER_MAX_LINES 500
+#define BROWSER_MAX_LINKS 64
+#define BROWSER_CACHE "/tmp/kindlejap_browser_cache.html"
+
+static char *browser_lines[BROWSER_MAX_LINES];
+static int browser_line_count = 0;
+
+typedef struct {
+    char url[256];
+    int line;
+} BrowserLink;
+
+static BrowserLink browser_links[BROWSER_MAX_LINKS];
+static int browser_link_count = 0;
+
+static void browser_free_content(void) {
+    for (int i = 0; i < browser_line_count; i++)
+        if (browser_lines[i]) { free(browser_lines[i]); browser_lines[i] = NULL; }
+    browser_line_count = 0;
+    browser_link_count = 0;
+    browser_scroll = 0;
+}
+
+static void browser_strip_tags(const char *html) {
+    browser_free_content();
+    int in_tag = 0;
+    int in_style = 0;
+    int in_script = 0;
+    int in_pre = 0;
+    int col = 0;
+    int max_cols = 130;
+    char line_buf[256] = "";
+    const char *p = html;
+
+    while (*p && browser_line_count < BROWSER_MAX_LINES) {
+        if (*p == '<') {
+            if (strncasecmp(p, "<style", 6) == 0) in_style = 1;
+            else if (strncasecmp(p, "</style>", 8) == 0) in_style = 0;
+            else if (strncasecmp(p, "<script", 7) == 0) in_script = 1;
+            else if (strncasecmp(p, "</script>", 9) == 0) in_script = 0;
+            else if (strncasecmp(p, "<pre", 4) == 0) in_pre = 1;
+            else if (strncasecmp(p, "</pre>", 6) == 0) in_pre = 0;
+
+            if (!in_pre && (strncasecmp(p, "<br", 3) == 0 || strncasecmp(p, "<p", 2) == 0 ||
+                strncasecmp(p, "<div", 4) == 0 || strncasecmp(p, "<li", 3) == 0 ||
+                strncasecmp(p, "<h", 2) == 0 || strncasecmp(p, "<tr", 3) == 0)) {
+                if (col > 0) {
+                    line_buf[col] = 0;
+                    browser_lines[browser_line_count] = strdup(line_buf);
+                    browser_line_count++;
+                    col = 0;
+                }
+            }
+
+            if (strncasecmp(p, "<a ", 3) == 0 && browser_link_count < BROWSER_MAX_LINKS) {
+                const char *href = strstr(p, "href=\"");
+                if (href) {
+                    href += 6;
+                    const char *end = strchr(href, '"');
+                    if (end) {
+                        int l = end - href;
+                        if (l < 255) {
+                            strncpy(browser_links[browser_link_count].url, href, l);
+                            browser_links[browser_link_count].url[l] = 0;
+                            browser_links[browser_link_count].line = browser_line_count;
+                            browser_link_count++;
+                        }
+                    }
+                }
+            }
+
+            in_tag = 1;
+            p++;
+            continue;
+        }
+        if (*p == '>') { in_tag = 0; in_style = 0; in_script = 0; p++; continue; }
+        if (in_tag || in_style || in_script) { p++; continue; }
+
+        if (*p == '&') {
+            if (strncasecmp(p, "&amp;", 5) == 0) { line_buf[col++] = '&'; p += 5; }
+            else if (strncasecmp(p, "&lt;", 4) == 0) { line_buf[col++] = '<'; p += 4; }
+            else if (strncasecmp(p, "&gt;", 4) == 0) { line_buf[col++] = '>'; p += 4; }
+            else if (strncasecmp(p, "&nbsp;", 6) == 0) { line_buf[col++] = ' '; p += 6; }
+            else if (strncasecmp(p, "&quot;", 6) == 0) { line_buf[col++] = '"'; p += 6; }
+            else { line_buf[col++] = *p; p++; }
+            if (col >= max_cols - 1) {
+                line_buf[col] = 0;
+                browser_lines[browser_line_count] = strdup(line_buf);
+                browser_line_count++;
+                col = 0;
+            }
+            continue;
+        }
+
+        if (*p == '\n' || *p == '\r') {
+            if (in_pre) {
+                if (col > 0) {
+                    line_buf[col] = 0;
+                    browser_lines[browser_line_count] = strdup(line_buf);
+                    browser_line_count++;
+                    col = 0;
+                }
+            }
+            p++; continue;
+        }
+
+        if (*p == ' ' && col > 0 && line_buf[col-1] == ' ') { p++; continue; }
+
+        if (!in_pre && *p == ' ' && col == 0) { p++; continue; }
+
+        if (col < max_cols - 1) line_buf[col++] = *p;
+
+        if (!in_pre && col >= max_cols - 1) {
+            const char *last_space = NULL;
+            for (int i = col - 1; i > col - 30 && i >= 0; i--)
+                if (line_buf[i] == ' ') { last_space = &line_buf[i]; break; }
+            int cut;
+            if (last_space) cut = last_space - line_buf;
+            else cut = col;
+            line_buf[cut] = 0;
+            browser_lines[browser_line_count] = strdup(line_buf);
+            browser_line_count++;
+            col = 0;
+            if (last_space) {
+                int rem = (col < max_cols) ? (cut + 1) : 0;
+                memmove(line_buf, line_buf + cut + 1, col - cut);
+                col = col - cut - 1;
+            }
+        }
+        p++;
+    }
+    if (col > 0 && browser_line_count < BROWSER_MAX_LINES) {
+        line_buf[col] = 0;
+        browser_lines[browser_line_count] = strdup(line_buf);
+        browser_line_count++;
+    }
+}
+
+static void browser_load_url(const char *url) {
+    browser_loading = 1;
+    browser_scroll = 0;
+    dirty = 1;
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "curl -sL -A \"KindleJap/2.0\" --max-time 15 \"%s\" -o " BROWSER_CACHE " 2>/dev/null", url);
+    system(cmd);
+    FILE *f = fopen(BROWSER_CACHE, "r");
+    if (!f) { browser_loading = 0; snprintf(browser_url, sizeof(browser_url), "%s", url); return; }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz > 500000) sz = 500000;
+    char *html = malloc(sz + 1);
+    if (html) {
+        int n = fread(html, 1, sz, f);
+        html[n] = 0;
+        browser_strip_tags(html);
+        free(html);
+    }
+    fclose(f);
+    snprintf(browser_url, sizeof(browser_url), "%s", url);
+    browser_loading = 0;
+    dirty = 1;
+}
 
 static void browser_draw(int x, int y, int w, int h) {
     draw_rect(x, y, w, h, COLOR_WHITE);
     draw_rounded_rect(x+10, y+10, w-20, 36, 8, COLOR_LIGHT);
-    draw_text(x+18, y+16, browser_url, COLOR_BLACK, 2);
-    if (browser_input_active) {
-        draw_text_centered_in(x, y+80, w, "Type URL and press Enter", COLOR_MID, 2);
-    } else {
-        draw_text_centered_in(x, y+80, w, "Tap URL bar to type", COLOR_MID, 2);
+    draw_text(x+18, y+16, browser_url, COLOR_BLACK, 1);
+    if (browser_loading) {
+        draw_text_centered_in(x, y+80, w, "Loading...", COLOR_MID, 2);
+        return;
+    }
+    if (browser_line_count == 0) {
+        if (browser_input_active)
+            draw_text_centered_in(x, y+80, w, "Type URL and press Enter", COLOR_MID, 2);
+        else
+            draw_text_centered_in(x, y+80, w, "Tap URL bar to load", COLOR_MID, 2);
+        return;
+    }
+    int iy = y + 56;
+    int line_h = 16;
+    int visible = (h - 66) / line_h;
+    if (browser_scroll > browser_line_count - visible) browser_scroll = browser_line_count - visible;
+    if (browser_scroll < 0) browser_scroll = 0;
+    for (int i = browser_scroll; i < browser_line_count && iy < y + h - 4; i++) {
+        int is_link = 0;
+        for (int j = 0; j < browser_link_count; j++)
+            if (browser_links[j].line == i) { is_link = 1; break; }
+        unsigned char color = is_link ? COLOR_MID : COLOR_BLACK;
+        draw_text(x+10, iy, browser_lines[i], color, 1);
+        if (is_link) {
+            int tw2 = text_width(browser_lines[i], 1);
+            draw_rect(x+10, iy+12, tw2, 1, COLOR_MID);
+        }
+        iy += line_h;
+    }
+    if (browser_scroll > 0) {
+        draw_rounded_rect(x+w-40, y+h-40, 30, 30, 8, COLOR_LIGHT);
+        draw_text_centered_in(x+w-40, y+h-34, 30, "^", COLOR_BLACK, 2);
+    }
+    if (browser_scroll < browser_line_count - visible) {
+        draw_rounded_rect(x+10, y+h-40, 30, 30, 8, COLOR_LIGHT);
+        draw_text_centered_in(x+10, y+h-34, 30, "v", COLOR_BLACK, 2);
     }
 }
 
@@ -1102,7 +1299,43 @@ static void browser_handle(int tx, int ty, int released) {
         keyboard_cursor = strlen(browser_url);
         strcpy(keyboard_buf, browser_url);
         browser_input_active = 1;
+        return;
     }
+    if (browser_loading) return;
+    int line_h = 16;
+    int visible = (screen_height - TOPBAR_H - 66) / line_h;
+    int iy = TOPBAR_H + 56;
+    if (ty >= iy && ty < iy + visible * line_h) {
+        int idx = browser_scroll + (ty - iy) / line_h;
+        if (idx < browser_line_count) {
+            for (int j = 0; j < browser_link_count; j++) {
+                if (browser_links[j].line == idx) {
+                    char full[512] = "";
+                    if (strncmp(browser_links[j].url, "http", 4) == 0)
+                        strncpy(full, browser_links[j].url, sizeof(full)-1);
+                    else if (browser_links[j].url[0] == '/') {
+                        const char *host = strstr(browser_url, "://");
+                        if (host) {
+                            host += 3;
+                            const char *slash = strchr(host, '/');
+                            int hlen = slash ? (slash - host) : strlen(host);
+                            snprintf(full, sizeof(full), "%.*s://%.*s%s", (int)(host - 3 - browser_url), browser_url, hlen, host, browser_links[j].url);
+                        }
+                    }
+                    if (strlen(full) > 0) browser_load_url(full);
+                    return;
+                }
+            }
+        }
+    }
+    int bw = 30;
+    if (point_in_rect(tx, ty, screen_width-40, screen_height-TOPBAR_H-40, 30, 30) && browser_scroll > 0) {
+        browser_scroll -= 5; dirty = 1; return;
+    }
+    if (point_in_rect(tx, ty, 10, screen_height-TOPBAR_H-40, 30, 30) && browser_scroll < browser_line_count) {
+        browser_scroll += 5; dirty = 1; return;
+    }
+    (void)bw;
 }
 
 #define MAX_INSTALLED_APPS 32
@@ -1479,6 +1712,7 @@ int main(void) {
                             if (browser_input_active && !keyboard_visible) {
                                 strncpy(browser_url, keyboard_buf, sizeof(browser_url)-1);
                                 browser_input_active = 0;
+                                browser_load_url(browser_url);
                             }
                             continue;
                         }

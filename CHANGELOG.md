@@ -2,6 +2,19 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.6.0] - 2026-08-20
+
+### Added
+- Functional web browser with HTML rendering
+- Fetches pages via curl with text/html output
+- Strips HTML tags to plain text for e-ink display
+- Parses `<a href>` links — tappable to navigate
+- Links shown underlined in blue
+- Scroll up/down with arrow buttons
+- Supports relative and absolute URLs
+- Handles HTML entities (&amp; &lt; &gt; etc.)
+- Ignores `<style>`, `<script>`, `<pre>` sections
+
 ## [2.5.3] - 2026-08-20
 
 ### Fixed
