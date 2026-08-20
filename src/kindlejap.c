@@ -48,6 +48,7 @@ int screen_width, screen_height, bytes_per_pixel;
 int input_fd = -1;
 volatile int running = 1;
 int lock_fd = -1;
+static int dirty = 1;
 
 struct mxcfb_rect { uint32_t top, left, width, height; };
 struct mxcfb_alt_buffer_data { uint32_t phys_addr, width, height; struct mxcfb_rect alt_update_region; };
@@ -916,6 +917,7 @@ int main(void) {
     log_msg("Apps loaded");
     int touch_x = 0, touch_y = 0;
     while (running) {
+        if (!dirty) { usleep(50000); continue; }
         draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
         if (active_app_idx >= 0 && active_app_idx < open_count) {
             int app_h = screen_height - TASKBAR_H;
@@ -927,6 +929,7 @@ int main(void) {
         if (keyboard_visible) keyboard_draw();
         update_draw();
         refresh_screen();
+        dirty = 0;
         if (input_fd >= 0) {
             struct input_event ev;
             while (read(input_fd, &ev, sizeof(ev)) == sizeof(ev)) {
@@ -935,6 +938,7 @@ int main(void) {
                     else if (ev.code == 54) touch_y = ev.value;
                 } else if (ev.type == EV_KEY && ev.code == 330) {
                     if (ev.value == 0) {
+                        dirty = 1;
                         if (update_state == 1) { update_handle(touch_x, touch_y, 1); continue; }
                         if (keyboard_visible) {
                             keyboard_handle_touch(touch_x, touch_y);
@@ -967,7 +971,7 @@ int main(void) {
                 }
             }
         }
-        usleep(30000);
+        usleep(50000);
     }
     for (int i=open_count-1; i>=0; i--)
         if (open_apps[i]->cleanup) open_apps[i]->cleanup();
