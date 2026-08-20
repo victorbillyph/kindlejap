@@ -14,66 +14,8 @@
 #include <pthread.h>
 #include <errno.h>
 #include <time.h>
+#include <stdint.h>
 #include <sys/mman.h>
-
-struct mxcfb_rect {
-    uint32_t top;
-    uint32_t left;
-    uint32_t width;
-    uint32_t height;
-};
-
-struct mxcfb_update_data {
-    struct mxcfb_rect update_region;
-    uint32_t waveform_mode;
-    uint32_t update_mode;
-    uint32_t update_marker;
-    int temp;
-    unsigned int flags;
-};
-
-#define MXCFB_SEND_UPDATE _IOW('F', 0x2E, struct mxcfb_update_data)
-#define MXCFB_WAIT_FOR_UPDATE _IOW('F', 0x2F, uint32_t)
-#define WAVEFORM_MODE_GC16 2
-#define WAVEFORM_MODE_GC4 0
-#define UPDATE_MODE_PARTIAL 0
-#define UPDATE_MODE_FULL 1
-
-void refresh_screen(void) {
-    if (fb_fd < 0) return;
-    struct mxcfb_update_data data;
-    memset(&data, 0, sizeof(data));
-    data.update_region.top = 0;
-    data.update_region.left = 0;
-    data.update_region.width = screen_width;
-    data.update_region.height = screen_height;
-    data.waveform_mode = WAVEFORM_MODE_GC16;
-    data.update_mode = UPDATE_MODE_FULL;
-    data.update_marker = 1;
-    data.temp = 0x1001;
-    data.flags = 0;
-    ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
-    uint32_t marker = 1;
-    ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
-}
-
-void refresh_screen_partial(void) {
-    if (fb_fd < 0) return;
-    struct mxcfb_update_data data;
-    memset(&data, 0, sizeof(data));
-    data.update_region.top = 0;
-    data.update_region.left = 0;
-    data.update_region.width = screen_width;
-    data.update_region.height = screen_height;
-    data.waveform_mode = WAVEFORM_MODE_GC4;
-    data.update_mode = UPDATE_MODE_PARTIAL;
-    data.update_marker = 2;
-    data.temp = 0x1001;
-    data.flags = 0;
-    ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
-    uint32_t marker = 2;
-    ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
-}
 
 #define KINDLEJAP_VERSION "1.2.4"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
@@ -160,6 +102,31 @@ void show_init_status(const char *msg);
 int acquire_lock(void);
 void release_lock(void);
 void restore_kindle_ui(void);
+void refresh_screen(void);
+void refresh_screen_partial(void);
+
+struct mxcfb_rect {
+    uint32_t top;
+    uint32_t left;
+    uint32_t width;
+    uint32_t height;
+};
+
+struct mxcfb_update_data {
+    struct mxcfb_rect update_region;
+    uint32_t waveform_mode;
+    uint32_t update_mode;
+    uint32_t update_marker;
+    int temp;
+    unsigned int flags;
+};
+
+#define MXCFB_SEND_UPDATE _IOW('F', 0x2E, struct mxcfb_update_data)
+#define MXCFB_WAIT_FOR_UPDATE _IOW('F', 0x2F, uint32_t)
+#define WAVEFORM_MODE_GC16 2
+#define WAVEFORM_MODE_GC4 0
+#define UPDATE_MODE_PARTIAL 0
+#define UPDATE_MODE_FULL 1
 
 static const unsigned char font5x7[][7] = {
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
@@ -227,6 +194,42 @@ static const unsigned char font5x7[][7] = {
     {0x1C, 0x22, 0x22, 0x1C, 0x22, 0x22, 0x1C},
     {0x1C, 0x22, 0x22, 0x1E, 0x02, 0x04, 0x18},
 };
+
+void refresh_screen(void) {
+    if (fb_fd < 0) return;
+    struct mxcfb_update_data data;
+    memset(&data, 0, sizeof(data));
+    data.update_region.top = 0;
+    data.update_region.left = 0;
+    data.update_region.width = screen_width;
+    data.update_region.height = screen_height;
+    data.waveform_mode = WAVEFORM_MODE_GC16;
+    data.update_mode = UPDATE_MODE_FULL;
+    data.update_marker = 1;
+    data.temp = 0x1001;
+    data.flags = 0;
+    ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
+    uint32_t marker = 1;
+    ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
+}
+
+void refresh_screen_partial(void) {
+    if (fb_fd < 0) return;
+    struct mxcfb_update_data data;
+    memset(&data, 0, sizeof(data));
+    data.update_region.top = 0;
+    data.update_region.left = 0;
+    data.update_region.width = screen_width;
+    data.update_region.height = screen_height;
+    data.waveform_mode = WAVEFORM_MODE_GC4;
+    data.update_mode = UPDATE_MODE_PARTIAL;
+    data.update_marker = 2;
+    data.temp = 0x1001;
+    data.flags = 0;
+    ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
+    uint32_t marker = 2;
+    ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
+}
 
 int acquire_lock(void) {
     log_msg("acquire_lock: opening " LOCKFILE);
