@@ -2,6 +2,13 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [1.1.1] - 2026-08-19
+
+### Fixed
+- KUAL integration: replaced extension.json with proper config.xml and menu.json
+- Shell script paths corrected for KUAL execution
+- Release packaging now creates correct folder structure
+
 ## [1.1.0] - 2026-08-19
 
 ### Added

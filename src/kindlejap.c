@@ -14,7 +14,7 @@
 #include <pthread.h>
 
 // Version
-#define KINDLEJAP_VERSION "1.1.0"
+#define KINDLEJAP_VERSION "1.1.1"
 
 // GitHub API URL for releases
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
