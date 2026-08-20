@@ -16,7 +16,7 @@
 #include <math.h>
 #include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "2.5.1"
+#define KINDLEJAP_VERSION "2.5.2"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -499,12 +499,18 @@ int point_in_rect(int px, int py, int x, int y, int w, int h) {
 }
 
 static int keyboard_visible = 0;
-static int keyboard_shift = 0;
+static int keyboard_mode = 0;
 static int keyboard_cursor = 0;
 static char keyboard_buf[128] = "";
 
-static const char *kb_rows[3] = {
+static const char *kb_rows_lower[3] = {
+    "qwertyuiop", "asdfghjkl", "zxcvbnm"
+};
+static const char *kb_rows_upper[3] = {
     "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"
+};
+static const char *kb_rows_sym[3] = {
+    ".,!?@#$%&*", "-+=/\\|~()", ";:'\"<>^"
 };
 
 void keyboard_draw(void) {
@@ -516,26 +522,27 @@ void keyboard_draw(void) {
         int tw = text_width(keyboard_buf, 2);
         if ((time(NULL)*2)%2==0) draw_rect(18+tw, ky+14, 2, 34, COLOR_BLACK);
     }
+    const char **rows = (keyboard_mode == 1) ? kb_rows_upper : (keyboard_mode == 2) ? kb_rows_sym : kb_rows_lower;
     int bw = (screen_width-60) / 10;
     int sy = ky + 58;
-    char sh[2] = { keyboard_shift ? 'A' : 'a', 0 };
-    draw_rounded_rect(10, sy, 80, 48, 8, COLOR_MID);
-    draw_text_centered_in(10, sy+14, 80, sh, COLOR_WHITE, 2);
+    const char *mode_labels[] = {"abc", "ABC", "#123"};
+    unsigned char mode_colors[] = {COLOR_MID, COLOR_DARK, COLOR_LIGHT};
+    draw_rounded_rect(10, sy, 80, 48, 8, mode_colors[keyboard_mode]);
+    draw_text_centered_in(10, sy+14, 80, mode_labels[keyboard_mode], COLOR_WHITE, 2);
     draw_rounded_rect(screen_width-90, sy, 80, 48, 8, COLOR_DARK);
     draw_text_centered_in(screen_width-90, sy+14, 80, "Enter", COLOR_WHITE, 2);
     int bkx = screen_width/2 - 55;
     draw_rounded_rect(bkx, sy, 110, 48, 8, COLOR_DARK);
     draw_text_centered_in(bkx, sy+14, 110, "Bksp", COLOR_WHITE, 2);
     for (int row=0; row<3; row++) {
-        int len = strlen(kb_rows[row]);
+        int len = strlen(rows[row]);
         int off = (10-len) * bw / 2;
         for (int i=0; i<len; i++) {
             int bx = 30 + off + i*bw;
             int by = ky + 116 + row*58;
-            char c = keyboard_shift ? kb_rows[row][i] : (kb_rows[row][i]+32);
-            char label[2] = {c, 0};
-            draw_rounded_rect(bx, by, bw-4, 52, 8, COLOR_WHITE);
-            draw_text_centered_in(bx, by+14, bw-4, label, COLOR_BLACK, 2);
+            unsigned char bg = (keyboard_mode == 2) ? COLOR_LIGHT : COLOR_WHITE;
+            draw_rounded_rect(bx, by, bw-4, 52, 8, bg);
+            draw_text_centered_in(bx, by+14, bw-4, &rows[row][i], COLOR_BLACK, 2);
         }
     }
     int spx = 30, spw = screen_width-60;
@@ -548,7 +555,8 @@ void keyboard_handle_touch(int tx, int ty) {
     int ky = screen_height - KEYBOARD_H;
     int sy = ky + 58;
     if (point_in_rect(tx, ty, 10, sy, 80, 48)) {
-        keyboard_shift = !keyboard_shift; return;
+        keyboard_mode = (keyboard_mode + 1) % 3;
+        return;
     }
     if (point_in_rect(tx, ty, screen_width-90, sy, 80, 48)) {
         keyboard_visible = 0; return;
@@ -558,15 +566,16 @@ void keyboard_handle_touch(int tx, int ty) {
         if (keyboard_cursor > 0) { keyboard_cursor--; keyboard_buf[keyboard_cursor]=0; }
         return;
     }
+    const char **rows = (keyboard_mode == 1) ? kb_rows_upper : (keyboard_mode == 2) ? kb_rows_sym : kb_rows_lower;
     int bw = (screen_width-60)/10;
     for (int row=0; row<3; row++) {
-        int len = strlen(kb_rows[row]);
+        int len = strlen(rows[row]);
         int off = (10-len)*bw/2;
         for (int i=0; i<len; i++) {
             int bx = 30+off+i*bw;
             int by = ky+116+row*58;
             if (point_in_rect(tx, ty, bx, by, bw-4, 52)) {
-                char c = keyboard_shift ? kb_rows[row][i] : (kb_rows[row][i]+32);
+                char c = rows[row][i];
                 if (keyboard_cursor < (int)sizeof(keyboard_buf)-1) {
                     keyboard_buf[keyboard_cursor++] = c;
                     keyboard_buf[keyboard_cursor] = 0;
@@ -1088,6 +1097,7 @@ static void browser_handle(int tx, int ty, int released) {
     if (!released) return;
     if (point_in_rect(tx, ty, 10, TOPBAR_H+10, screen_width-20, 36)) {
         keyboard_visible = 1;
+        keyboard_mode = 0;
         keyboard_cursor = strlen(browser_url);
         strcpy(keyboard_buf, browser_url);
         browser_input_active = 1;
@@ -1340,6 +1350,7 @@ static void pkg_handle(int tx, int ty, int released) {
         pkg_input_active = 1;
         pkg_input_buf[0] = 0;
         keyboard_visible = 1;
+        keyboard_mode = 0;
         keyboard_cursor = 0;
         strcpy(keyboard_buf, "");
         return;

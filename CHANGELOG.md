@@ -2,6 +2,12 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.5.2] - 2026-08-20
+
+### Added
+- Symbols mode on keyboard (.,!?@#$%&*-+=/\\|~();:'"<>^)
+- Toggle between abc / ABC / #123 with mode button
+
 ## [2.5.1] - 2026-08-20
 
 ### Fixed
