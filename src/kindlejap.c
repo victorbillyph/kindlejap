@@ -2033,20 +2033,20 @@ static void setup_finish(void) {
 
 #define TUTORIAL_STEPS 6
 static const char *tutorial_titles[] = {
-    "The Top Bar",
-    "The Menu",
+    "WiFi & Battery",
+    "Power Menu",
     "Sleep Mode",
     "Opening Apps",
     "Notifications",
     "Scrolling"
 };
 static const char *tutorial_texts[] = {
-    "The top bar shows WiFi status on the left and battery percentage on the right.\n\nTap the top-right area to open the notification sidebar.",
-    "Press the power button to open the control menu.\n\nFrom here you can open the main menu, put the device to sleep, or exit KindleJap.",
-    "Press power once to see the menu, then tap 'Sleep' to put the device to sleep.\n\nThe Kindle UI is preserved and will return when you wake up.",
-    "The main menu shows all installed apps.\n\nTap any app name to open it. You can install more apps from the Package Manager.",
-    "The notification sidebar shows alerts from apps.\n\nTap the top-right corner of the screen to toggle it. Tap a notification action to respond.",
-    "Use the arrow buttons at the bottom of the screen to scroll through content.\n\nSwipe or tap ^ and v to navigate up and down."
+    "The top bar at the top of the screen shows your WiFi status on the left side and your battery percentage on the right side.\n\nTap the top-right corner of the screen to open your notifications.",
+    "Press the physical power button on the bottom of your Kindle to open the control menu.\n\nFrom this menu you can open the main menu, put the device to sleep, or exit KindleJap.",
+    "Press the power button once to see the menu.\n\nThen tap 'Sleep' to put the device to sleep.\n\nKindleJap saves everything. When you wake up, everything will be exactly as you left it.",
+    "The main menu shows all your installed apps.\n\nTap any app name to open it. You can install more apps from the Package Manager.",
+    "The notification sidebar shows alerts and messages from your apps.\n\nTo open it, tap the top-right corner of the screen. Tap a notification action button to respond.",
+    "Use the arrow buttons at the bottom of the screen to scroll up and down through content.\n\nTap the up arrow to go up, or the down arrow to go down."
 };
 static int tutorial_highlight_x[TUTORIAL_STEPS];
 static int tutorial_highlight_y[TUTORIAL_STEPS];
@@ -2082,45 +2082,43 @@ static void setup_draw_topbar(int tutorial) {
 }
 
 static void setup_draw_buttons(const char *left_label, const char *right_label) {
-    int btn_h = 36;
-    int btn_w = 160;
-    int btn_y = screen_height - TOPBAR_H - btn_h - 20;
+    int btn_h = 44;
+    int btn_w = 200;
+    int btn_y = screen_height - TOPBAR_H - btn_h - 24;
     if (left_label) {
-        draw_rounded_rect(20, btn_y, btn_w, btn_h, 8, COLOR_MID);
-        draw_text_centered_in(20, btn_y + 8, btn_w, left_label, COLOR_WHITE, 2);
+        draw_rounded_rect(24, btn_y, btn_w, btn_h, 10, COLOR_MID);
+        draw_text_centered_in(24, btn_y + 10, btn_w, left_label, COLOR_WHITE, 2);
     }
     if (right_label) {
-        draw_rounded_rect(screen_width - btn_w - 20, btn_y, btn_w, btn_h, 8, COLOR_DARK);
-        draw_text_centered_in(screen_width - btn_w - 20, btn_y + 8, btn_w, right_label, COLOR_WHITE, 2);
+        draw_rounded_rect(screen_width - btn_w - 24, btn_y, btn_w, btn_h, 10, COLOR_DARK);
+        draw_text_centered_in(screen_width - btn_w - 24, btn_y + 10, btn_w, right_label, COLOR_WHITE, 2);
     }
 }
 
 static int setup_draw_step0(void) {
     setup_draw_topbar(0);
-    int y = TOPBAR_H + 30;
+    int y = TOPBAR_H + 40;
     draw_text_centered_in(0, y, screen_width, "Welcome to", COLOR_MID, 3);
-    y += 42;
+    y += 46;
     draw_text_centered_in(0, y, screen_width, "KindleJap", COLOR_BLACK, 5);
-    y += 70;
-    draw_rounded_rect(60, y, screen_width-120, 2, 1, COLOR_LIGHT);
-    y += 20;
-    draw_text_centered_in(0, y, screen_width, "A custom launcher for your Kindle", COLOR_DARK, 2);
+    y += 80;
+    draw_rounded_rect(100, y, screen_width-200, 3, 1, COLOR_LIGHT);
     y += 30;
-    draw_text_centered_in(0, y, screen_width, "with apps, package manager,", COLOR_DARK, 1);
-    y += 16;
-    draw_text_centered_in(0, y, screen_width, "notifications, and more.", COLOR_DARK, 1);
-    y += 40;
-    draw_rounded_rect(40, y, screen_width-80, 90, 8, COLOR_LIGHT);
-    draw_text(60, y+12, "Device:", COLOR_DARK, 2);
-    draw_text(60, y+36, kindle_model, COLOR_BLACK, 2);
-    draw_text(60, y+60, kindle_screen, COLOR_DARK, 1);
+    draw_text_centered_in(0, y, screen_width, "Your new Kindle experience", COLOR_DARK, 2);
+    y += 36;
+    draw_text_centered_in(0, y, screen_width, "with apps, browser, and more.", COLOR_DARK, 2);
+    y += 50;
+    draw_rounded_rect(40, y, screen_width-80, 120, 10, COLOR_LIGHT);
+    draw_text(60, y+14, "Device Info:", COLOR_MID, 2);
+    draw_text(60, y+42, kindle_model, COLOR_BLACK, 2);
+    draw_text(60, y+70, kindle_screen, COLOR_DARK, 2);
     if (strlen(kindle_fw) > 0) {
         char fw_short[64];
         strncpy(fw_short, kindle_fw, 63);
-        fw_short[60] = 0;
-        draw_text(260, y+60, fw_short, COLOR_DARK, 1);
+        fw_short[50] = 0;
+        draw_text(60, y+94, fw_short, COLOR_DARK, 1);
     }
-    y += 110;
+    y += 140;
     draw_text_centered_in(0, y, screen_width, "Version " KINDLEJAP_VERSION, COLOR_MID, 1);
     setup_draw_buttons(NULL, "Next");
     return 1;
@@ -2128,35 +2126,35 @@ static int setup_draw_step0(void) {
 
 static int setup_draw_step1(void) {
     setup_draw_topbar(0);
-    int y = TOPBAR_H + 20;
-    draw_text_centered_in(0, y, screen_width, "Instructions", COLOR_BLACK, 3);
-    y += 44;
-    draw_text_centered_in(0, y, screen_width, "Learn how to use KindleJap", COLOR_DARK, 1);
-    y += 30;
-    int tx = 30;
-    int tw = screen_width - 60;
-    draw_rounded_rect(tx, y, tw, 280, 8, COLOR_LIGHT);
+    int y = TOPBAR_H + 16;
+    draw_text_centered_in(0, y, screen_width, "How to Use KindleJap", COLOR_BLACK, 3);
+    y += 46;
+    int tx = 20;
+    int tw = screen_width - 40;
+    int box_h = 400;
+    draw_rounded_rect(tx, y, tw, box_h, 10, COLOR_LIGHT);
     const char *title = tutorial_titles[setup_tutorial_step];
     const char *text = tutorial_texts[setup_tutorial_step];
-    draw_text_centered_in(tx, y+12, tw, title, COLOR_BLACK, 2);
-    y += 40;
-    int ty = y;
+    draw_rect(tx, y, tw, 40, COLOR_DARK);
+    draw_text_centered_in(tx, y+8, tw, title, COLOR_WHITE, 2);
+    y += 54;
+    int ty = y + 8;
     const char *line = text;
-    while (*line) {
+    while (*line && ty < y + box_h - 60) {
         const char *nl = strchr(line, '\n');
         int llen = nl ? (nl - line) : (int)strlen(line);
         if (llen > 0 && llen < 256) {
             char lbuf[256];
             memcpy(lbuf, line, llen);
             lbuf[llen] = 0;
-            draw_text(tx+16, ty, lbuf, COLOR_DARK, 1);
+            draw_text(tx+20, ty, lbuf, COLOR_BLACK, 2);
         }
-        ty += 18;
+        ty += 28;
         if (!nl) break;
         line = nl + 1;
-        while (*line == '\n') { ty += 8; line++; }
+        while (*line == '\n') { ty += 14; line++; }
     }
-    y += 280 + 10;
+    y += box_h + 12;
     tutorial_anim_frame++;
     if (tutorial_anim_frame > 30) tutorial_anim_frame = 0;
     int hx = tutorial_highlight_x[setup_tutorial_step];
@@ -2165,45 +2163,40 @@ static int setup_draw_step1(void) {
     int hh = tutorial_highlight_h[setup_tutorial_step];
     int pulse = (tutorial_anim_frame / 5) % 2;
     if (pulse) {
-        draw_rect(hx-2, hy-2, hw+4, hh+4, COLOR_DARK);
+        draw_rect(hx-3, hy-3, hw+6, hh+6, COLOR_BLACK);
     } else {
-        draw_rect(hx-1, hy-1, hw+2, hh+2, COLOR_LIGHT);
-        draw_rect(hx, hy, hw, hh, COLOR_DARK);
+        draw_rect(hx-1, hy-1, hw+2, hh+2, COLOR_WHITE);
+        draw_rect(hx, hy, hw, hh, COLOR_BLACK);
     }
-    y += 10;
     char step_str[32];
-    snprintf(step_str, sizeof(step_str), "%d / %d", setup_tutorial_step+1, TUTORIAL_STEPS);
-    draw_text_centered_in(0, y, screen_width, step_str, COLOR_MID, 1);
+    snprintf(step_str, sizeof(step_str), "Step %d of %d", setup_tutorial_step+1, TUTORIAL_STEPS);
+    draw_text_centered_in(0, y, screen_width, step_str, COLOR_DARK, 2);
     if (setup_tutorial_step < TUTORIAL_STEPS - 1)
         setup_draw_buttons("Back", "Next");
     else
-        setup_draw_buttons("Back", "Finish Tutorial");
+        setup_draw_buttons("Back", "Done");
     return 1;
 }
 
 static int setup_draw_step2(void) {
     setup_draw_topbar(0);
-    int y = TOPBAR_H + 40;
-    draw_text_centered_in(0, y, screen_width, "All Set!", COLOR_BLACK, 4);
-    y += 60;
-    draw_rounded_rect(60, y, screen_width-120, 2, 1, COLOR_LIGHT);
-    y += 24;
-    draw_text_centered_in(0, y, screen_width, "KindleJap is ready to use.", COLOR_DARK, 2);
-    y += 34;
-    draw_text_centered_in(0, y, screen_width, "You can always revisit the", COLOR_MID, 1);
-    y += 18;
-    draw_text_centered_in(0, y, screen_width, "tutorial by pressing the power", COLOR_MID, 1);
-    y += 18;
-    draw_text_centered_in(0, y, screen_width, "button and checking the menu.", COLOR_MID, 1);
+    int y = TOPBAR_H + 60;
+    draw_text_centered_in(0, y, screen_width, "All Set!", COLOR_BLACK, 5);
+    y += 80;
+    draw_text_centered_in(0, y, screen_width, "KindleJap is ready.", COLOR_DARK, 3);
     y += 50;
-    draw_rounded_rect(80, y, screen_width-160, 100, 8, COLOR_LIGHT);
+    draw_text_centered_in(0, y, screen_width, "Tap the power button to open", COLOR_DARK, 2);
+    y += 28;
+    draw_text_centered_in(0, y, screen_width, "the menu and start exploring.", COLOR_DARK, 2);
+    y += 60;
+    draw_rounded_rect(80, y, screen_width-160, 120, 10, COLOR_LIGHT);
     y += 16;
-    draw_text_centered_in(0, y, screen_width, "Created by", COLOR_MID, 1);
-    y += 22;
-    draw_text_centered_in(0, y, screen_width, "victorbillyph", COLOR_BLACK, 3);
-    y += 38;
+    draw_text_centered_in(0, y, screen_width, "Created by", COLOR_MID, 2);
+    y += 30;
+    draw_text_centered_in(0, y, screen_width, "victorbillyph", COLOR_BLACK, 4);
+    y += 50;
     draw_text_centered_in(0, y, screen_width, "github.com/victorbillyph", COLOR_DARK, 1);
-    setup_draw_buttons(NULL, "Start KindleJap");
+    setup_draw_buttons(NULL, "Start");
     return 1;
 }
 
@@ -2218,9 +2211,9 @@ static void setup_draw(void) {
 
 static void setup_handle(int tx, int ty, int released) {
     if (!released) return;
-    int btn_h = 36;
-    int btn_w = 160;
-    int btn_y = screen_height - TOPBAR_H - btn_h - 20;
+    int btn_h = 44;
+    int btn_w = 200;
+    int btn_y = screen_height - TOPBAR_H - btn_h - 24;
 
     if (setup_step == 0) {
         if (point_in_rect(tx, ty, screen_width - btn_w - 20, btn_y, btn_w, btn_h)) {
