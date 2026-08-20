@@ -795,7 +795,8 @@ static void calc_draw(int x, int y, int w, int h) {
             int kx=x+10+c*bw, ky=y+80+r*bh;
             unsigned char bg = (r*4+c==12) ? COLOR_MID : COLOR_LIGHT;
             draw_rounded_rect(kx+2, ky+2, bw-4, bh-4, 8, bg);
-            draw_text_centered(ky+18, keys[r*4+c], COLOR_BLACK, 3);
+            int tw2 = text_width(keys[r*4+c], 3);
+            draw_text(kx + (bw-tw2)/2, ky+18, keys[r*4+c], COLOR_BLACK, 3);
         }
 }
 
