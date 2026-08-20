@@ -26,7 +26,7 @@
 #define APPSTATE_FILE "/mnt/us/extensions/kindlejap/data/appstate.cfg"
 #define COMMUNITY_APPS_DIR "/mnt/us/kindlejap_apps"
 #define TOPBAR_H 40
-#define KEYBOARD_H 290
+#define KEYBOARD_H 360
 #define FONT_W 8
 #define FONT_H 13
 #define CORNER_R 8
@@ -517,60 +517,54 @@ void keyboard_draw(void) {
         if ((time(NULL)*2)%2==0) draw_rect(18+tw, ky+14, 2, 34, COLOR_BLACK);
     }
     int bw = (screen_width-60) / 10;
+    int sy = ky + 58;
+    char sh[2] = { keyboard_shift ? 'A' : 'a', 0 };
+    draw_rounded_rect(10, sy, 80, 48, 8, COLOR_MID);
+    draw_text_centered_in(10, sy+14, 80, sh, COLOR_WHITE, 2);
+    draw_rounded_rect(screen_width-90, sy, 80, 48, 8, COLOR_DARK);
+    draw_text_centered_in(screen_width-90, sy+14, 80, "Enter", COLOR_WHITE, 2);
+    int bkx = screen_width/2 - 55;
+    draw_rounded_rect(bkx, sy, 110, 48, 8, COLOR_DARK);
+    draw_text_centered_in(bkx, sy+14, 110, "Bksp", COLOR_WHITE, 2);
     for (int row=0; row<3; row++) {
         int len = strlen(kb_rows[row]);
         int off = (10-len) * bw / 2;
         for (int i=0; i<len; i++) {
             int bx = 30 + off + i*bw;
-            int by = ky + 58 + row*58;
+            int by = ky + 116 + row*58;
             char c = keyboard_shift ? kb_rows[row][i] : (kb_rows[row][i]+32);
             char label[2] = {c, 0};
             draw_rounded_rect(bx, by, bw-4, 52, 8, COLOR_WHITE);
             draw_text_centered_in(bx, by+14, bw-4, label, COLOR_BLACK, 2);
         }
     }
-    int sx = screen_width - bw*2 - 30;
-    int sy = ky + 58 + 2*58;
-    draw_rounded_rect(sx, sy, bw*2-4, 52, 8, COLOR_DARK);
-    draw_text_centered_in(sx, sy+14, bw*2-4, "SPACE", COLOR_WHITE, 2);
-    draw_rounded_rect(20, sy, bw*2-4, 52, 8, COLOR_MID);
-    char sh[2] = { keyboard_shift ? 'A' : 'a', 0 };
-    draw_text_centered_in(20, sy+14, bw*2-4, sh, COLOR_WHITE, 2);
-    draw_rounded_rect(screen_width-bw*2-50, ky+58, bw*2-4, 52, 8, COLOR_DARK);
-    draw_text_centered_in(screen_width-bw*2-50, ky+58+14, bw*2-4, "BACK", COLOR_WHITE, 2);
-    draw_rounded_rect(30, ky+14, 60, 30, 8, COLOR_MID);
-    draw_text_centered_in(30, ky+18, 60, "X", COLOR_WHITE, 2);
+    int spx = 30, spw = screen_width-60;
+    int spy = ky + 116 + 3*58;
+    draw_rounded_rect(spx, spy, spw, 52, 8, COLOR_WHITE);
+    draw_text_centered_in(spx, spy+14, spw, "SPACE", COLOR_BLACK, 2);
 }
 
 void keyboard_handle_touch(int tx, int ty) {
     int ky = screen_height - KEYBOARD_H;
-    if (point_in_rect(tx, ty, 30, ky+14, 60, 30)) {
-        keyboard_visible = 0; return;
-    }
-    if (point_in_rect(tx, ty, 20, ky+58+2*58, (screen_width-60)/10*2-4, 52)) {
+    int sy = ky + 58;
+    if (point_in_rect(tx, ty, 10, sy, 80, 48)) {
         keyboard_shift = !keyboard_shift; return;
     }
-    int bw = (screen_width-60)/10;
-    int sx = screen_width - bw*2 - 30;
-    int sy = ky + 58 + 2*58;
-    if (point_in_rect(tx, ty, sx, sy, bw*2-4, 52)) {
-        if (keyboard_cursor < (int)sizeof(keyboard_buf)-1) {
-            keyboard_buf[keyboard_cursor++] = ' ';
-            keyboard_buf[keyboard_cursor] = 0;
-        }
-        return;
+    if (point_in_rect(tx, ty, screen_width-90, sy, 80, 48)) {
+        keyboard_visible = 0; return;
     }
-    int bsx = screen_width-bw*2-50;
-    if (point_in_rect(tx, ty, bsx, ky+58, bw*2-4, 52)) {
+    int bkx = screen_width/2 - 55;
+    if (point_in_rect(tx, ty, bkx, sy, 110, 48)) {
         if (keyboard_cursor > 0) { keyboard_cursor--; keyboard_buf[keyboard_cursor]=0; }
         return;
     }
+    int bw = (screen_width-60)/10;
     for (int row=0; row<3; row++) {
         int len = strlen(kb_rows[row]);
         int off = (10-len)*bw/2;
         for (int i=0; i<len; i++) {
             int bx = 30+off+i*bw;
-            int by = ky+58+row*58;
+            int by = ky+116+row*58;
             if (point_in_rect(tx, ty, bx, by, bw-4, 52)) {
                 char c = keyboard_shift ? kb_rows[row][i] : (kb_rows[row][i]+32);
                 if (keyboard_cursor < (int)sizeof(keyboard_buf)-1) {
@@ -580,6 +574,14 @@ void keyboard_handle_touch(int tx, int ty) {
                 return;
             }
         }
+    }
+    int spy = ky + 116 + 3*58;
+    if (point_in_rect(tx, ty, 30, spy, screen_width-60, 52)) {
+        if (keyboard_cursor < (int)sizeof(keyboard_buf)-1) {
+            keyboard_buf[keyboard_cursor++] = ' ';
+            keyboard_buf[keyboard_cursor] = 0;
+        }
+        return;
     }
 }
 
@@ -705,19 +707,19 @@ static void topbar_draw(void) {
     draw_rect(0, 0, screen_width, TOPBAR_H, COLOR_DARK);
     int wifi = read_wifi();
     draw_text(16, 10, wifi ? "WiFi" : "---", COLOR_WHITE, 2);
-    int nc = notif_get_active();
-    int nx = screen_width - 120;
-    draw_text(nx, 10, "[!]", COLOR_WHITE, 2);
-    if (nc > 0) {
-        char nstr[8]; snprintf(nstr, sizeof(nstr), "%d", nc);
-        draw_rounded_rect(nx + 32, 6, text_width(nstr, 2) + 12, 24, 12, COLOR_WHITE);
-        draw_text(nx + 38, 10, nstr, COLOR_DARK, 2);
-    }
     int bat = read_battery();
     if (bat >= 0) {
         char bstr[16]; snprintf(bstr, sizeof(bstr), "%d%%", bat);
         int bw = text_width(bstr, 2);
         draw_text(screen_width - bw - 16, 10, bstr, COLOR_WHITE, 2);
+    }
+    int nc = notif_get_active();
+    int nx = screen_width - 180;
+    draw_text(nx, 10, "[!]", COLOR_WHITE, 2);
+    if (nc > 0) {
+        char nstr[8]; snprintf(nstr, sizeof(nstr), "%d", nc);
+        draw_rounded_rect(nx + 32, 6, text_width(nstr, 2) + 12, 24, 12, COLOR_WHITE);
+        draw_text(nx + 38, 10, nstr, COLOR_DARK, 2);
     }
 }
 
@@ -1471,7 +1473,7 @@ int main(void) {
                         if (downbar_visible) { downbar_handle_touch(touch_x, touch_y); continue; }
                         if (menu_visible) { menu_handle_touch(touch_x, touch_y); continue; }
                         if (notif_sidebar_visible) { notif_sidebar_handle(touch_x, touch_y); continue; }
-                        if (touch_y < TOPBAR_H && touch_x >= screen_width - 120 && touch_x < screen_width - 80) {
+                        if (touch_y < TOPBAR_H && touch_x >= screen_width - 180 && touch_x < screen_width - 140) {
                             notif_sidebar_visible = !notif_sidebar_visible; continue;
                         }
                         if (active_app_idx >= 0 && active_app_idx < open_count)
