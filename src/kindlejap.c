@@ -16,7 +16,7 @@
 #include <math.h>
 #include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "2.2.0"
+#define KINDLEJAP_VERSION "2.3.0"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -602,12 +602,15 @@ static void net_draw(int x, int y, int w, int h);
 static void net_handle(int x, int y, int released);
 static void browser_draw(int x, int y, int w, int h);
 static void browser_handle(int x, int y, int released);
+static void pkg_draw(int x, int y, int w, int h);
+static void pkg_handle(int x, int y, int released);
 static void check_update(void);
 
 static App calc_app = {"Calculator", NULL, calc_draw, calc_handle, NULL};
 static App file_app = {"Files", NULL, file_draw, file_handle, NULL};
 static App net_app = {"Network", net_init, net_draw, net_handle, NULL};
 static App browser_app = {"Browser", NULL, browser_draw, browser_handle, NULL};
+static App pkg_app = {"Package Manager", NULL, pkg_draw, pkg_handle, NULL};
 
 void app_register(App *app) {
     if (registered_count < MAX_REGISTERED_APPS) registered[registered_count++] = *app;
@@ -662,11 +665,11 @@ static void downbar_draw(void) {
 
 static void menu_draw(void) {
     if (!menu_visible) return;
-    int mw = 280, mh = 300;
+    int mw = 280, mh = 392;
     int mx = (screen_width - mw) / 2, my = TOPBAR_H + 80;
     draw_rounded_rect(mx, my, mw, mh, CORNER_R, COLOR_WHITE);
-    const char *items[] = {"Calculator", "Files", "Network", "Browser", "Check Update", "Close"};
-    for (int i=0; i<6; i++) {
+    const char *items[] = {"Calculator", "Files", "Network", "Browser", "Package Manager", "Check Update", "Close"};
+    for (int i=0; i<7; i++) {
         int iy = my + 10 + i*46;
         draw_rounded_rect(mx+10, iy, mw-20, 40, 8, COLOR_LIGHT);
         draw_text_centered_in(mx+10, iy+10, mw-20, items[i], COLOR_BLACK, 2);
@@ -688,7 +691,7 @@ static void downbar_handle_touch(int tx, int ty) {
 }
 
 static void menu_handle_touch(int tx, int ty) {
-    int mw=280, mh=300;
+    int mw=280, mh=392;
     int mx=(screen_width-mw)/2, my=TOPBAR_H+80;
     if (!point_in_rect(tx, ty, mx, my, mw, mh)) { menu_visible=0; return; }
     App *apps[] = {&calc_app, &file_app, &net_app, &browser_app};
@@ -700,12 +703,16 @@ static void menu_handle_touch(int tx, int ty) {
     }
     int iy4 = my+10+4*46;
     if (point_in_rect(tx, ty, mx+10, iy4, mw-20, 40)) {
+        app_open(&pkg_app); menu_visible=0; return;
+    }
+    int iy5 = my+10+5*46;
+    if (point_in_rect(tx, ty, mx+10, iy5, mw-20, 40)) {
         menu_visible=0;
         check_update();
         return;
     }
-    int iy5 = my+10+5*46;
-    if (point_in_rect(tx, ty, mx+10, iy5, mw-20, 40)) {
+    int iy6 = my+10+6*46;
+    if (point_in_rect(tx, ty, mx+10, iy6, mw-20, 40)) {
         menu_visible=0;
     }
 }
@@ -955,6 +962,275 @@ static void browser_handle(int tx, int ty, int released) {
     }
 }
 
+#define MAX_INSTALLED_APPS 32
+#define PKG_APPS_DIR "/mnt/us/extensions/kindlejap/apps"
+#define PKG_INSTALLED_FILE "/mnt/us/extensions/kindlejap/data/installed.cfg"
+#define PKG_MANIFEST_URL "https://raw.githubusercontent.com/%s/main/kindlejap-app.json"
+#define PKG_MANIFEST_URL2 "https://raw.githubusercontent.com/%s/master/kindlejap-app.json"
+#define PKG_RELEASE_URL "https://api.github.com/repos/%s/releases/latest"
+#define PKG_MANIFEST_LOCAL "/tmp/kindlejap_pkg_manifest.json"
+#define PKG_BINARY_LOCAL "/tmp/kindlejap_pkg_binary"
+
+typedef struct {
+    char name[64];
+    char repo[128];
+    char version[32];
+    char description[128];
+    int installed;
+} PkgInfo;
+
+static PkgInfo pkg_known[MAX_INSTALLED_APPS];
+static int pkg_known_count = 0;
+static int pkg_scroll = 0;
+static int pkg_mode = 0;
+#define PKG_MODE_VIEW 0
+#define PKG_MODE_INPUT 1
+#define PKG_MODE_INSTALLING 2
+#define PKG_MODE_DONE 3
+#define PKG_MODE_UNINSTALLING 4
+static char pkg_status[256] = "";
+static char pkg_input_buf[256] = "";
+static int pkg_input_active = 0;
+
+static void pkg_load_installed(void) {
+    pkg_known_count = 0;
+    const char *builtins[] = {"Calculator", "Files", "Network", "Browser", "Package Manager"};
+    for (int i = 0; i < 5; i++) {
+        strncpy(pkg_known[pkg_known_count].name, builtins[i], 63);
+        pkg_known[pkg_known_count].repo[0] = 0;
+        pkg_known[pkg_known_count].version[0] = 0;
+        snprintf(pkg_known[pkg_known_count].description, sizeof(pkg_known[0].description), "Built-in app");
+        pkg_known[pkg_known_count].installed = 1;
+        pkg_known_count++;
+    }
+    FILE *f = fopen(PKG_INSTALLED_FILE, "r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof(line), f) && pkg_known_count < MAX_INSTALLED_APPS) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (strlen(line) == 0) continue;
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        *tab = 0;
+        char *name = line, *repo = tab + 1;
+        strncpy(pkg_known[pkg_known_count].name, name, 63);
+        strncpy(pkg_known[pkg_known_count].repo, repo, 127);
+        pkg_known[pkg_known_count].version[0] = 0;
+        snprintf(pkg_known[pkg_known_count].description, sizeof(pkg_known[0].description), "External app");
+        pkg_known[pkg_known_count].installed = 1;
+        pkg_known_count++;
+    }
+    fclose(f);
+}
+
+static void pkg_save_installed(void) {
+    FILE *f = fopen(PKG_INSTALLED_FILE, "w");
+    if (!f) return;
+    for (int i = 0; i < pkg_known_count; i++) {
+        if (pkg_known[i].installed && pkg_known[i].repo[0])
+            fprintf(f, "%s\t%s\n", pkg_known[i].name, pkg_known[i].repo);
+    }
+    fclose(f);
+}
+
+static int pkg_find_app(const char *name) {
+    for (int i = 0; i < pkg_known_count; i++)
+        if (strcmp(pkg_known[i].name, name) == 0) return i;
+    return -1;
+}
+
+static int pkg_is_builtin(int idx) {
+    return idx < 5;
+}
+
+static void pkg_install(const char *repo) {
+    pkg_mode = PKG_MODE_INSTALLING;
+    snprintf(pkg_status, sizeof(pkg_status), "Downloading manifest...");
+    dirty = 1;
+
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "curl -sL \"" PKG_MANIFEST_URL "\" -o " PKG_MANIFEST_LOCAL " 2>/dev/null", repo);
+    system(cmd);
+    FILE *f = fopen(PKG_MANIFEST_LOCAL, "r");
+    if (!f) {
+        snprintf(cmd, sizeof(cmd), "curl -sL \"" PKG_MANIFEST_URL2 "\" -o " PKG_MANIFEST_LOCAL " 2>/dev/null", repo);
+        system(cmd);
+        f = fopen(PKG_MANIFEST_LOCAL, "r");
+    }
+    if (!f) { snprintf(pkg_status, sizeof(pkg_status), "Failed: no manifest found"); pkg_mode = PKG_MODE_DONE; return; }
+
+    char buf[2048]; int n = fread(buf, 1, sizeof(buf)-1, f);
+    buf[n] = 0; fclose(f);
+
+    char app_name[64] = "", app_binary[128] = "", app_version[32] = "", app_desc[128] = "";
+
+    char *p = strstr(buf, "\"name\"");
+    if (p) { p = strchr(p, ':'); if (p) { p++; while (*p==' '||*p=='"') p++; char *e = strchr(p, '"'); if (e) { int l=e-p; if(l<63) { strncpy(app_name, p, l); app_name[l]=0; } } } }
+    p = strstr(buf, "\"binary\"");
+    if (p) { p = strchr(p, ':'); if (p) { p++; while (*p==' '||*p=='"') p++; char *e = strchr(p, '"'); if (e) { int l=e-p; if(l<127) { strncpy(app_binary, p, l); app_binary[l]=0; } } } }
+    p = strstr(buf, "\"version\"");
+    if (p) { p = strchr(p, ':'); if (p) { p++; while (*p==' '||*p=='"') p++; char *e = strchr(p, '"'); if (e) { int l=e-p; if(l<31) { strncpy(app_version, p, l); app_version[l]=0; } } } }
+    p = strstr(buf, "\"description\"");
+    if (p) { p = strchr(p, ':'); if (p) { p++; while (*p==' '||*p=='"') p++; char *e = strchr(p, '"'); if (e) { int l=e-p; if(l<127) { strncpy(app_desc, p, l); app_desc[l]=0; } } } }
+
+    if (strlen(app_name) == 0) { snprintf(pkg_status, sizeof(pkg_status), "Failed: no name in manifest"); pkg_mode = PKG_MODE_DONE; return; }
+    if (strlen(app_binary) == 0) strcpy(app_binary, app_name);
+
+    snprintf(pkg_status, sizeof(pkg_status), "Downloading %s...", app_name);
+    dirty = 1;
+
+    snprintf(cmd, sizeof(cmd), "curl -sL \"" PKG_RELEASE_URL "\" -o /tmp/kindlejap_pkg_release.json 2>/dev/null", repo);
+    system(cmd);
+    f = fopen("/tmp/kindlejap_pkg_release.json", "r");
+    if (!f) { snprintf(pkg_status, sizeof(pkg_status), "Failed: can't fetch release"); pkg_mode = PKG_MODE_DONE; return; }
+    n = fread(buf, 1, sizeof(buf)-1, f);
+    buf[n] = 0; fclose(f);
+
+    char dl_url[512] = "";
+    p = strstr(buf, "\"browser_download_url\"");
+    if (p) {
+        p = strchr(p, ':');
+        if (p) { p++; while (*p==' '||*p=='"') p++; char *e = strchr(p, '"'); if (e) { int l=e-p; if(l<511) { strncpy(dl_url, p, l); dl_url[l]=0; } } }
+    }
+    if (strlen(dl_url) == 0) { snprintf(pkg_status, sizeof(pkg_status), "Failed: no download URL"); pkg_mode = PKG_MODE_DONE; return; }
+
+    char app_dir[256];
+    snprintf(app_dir, sizeof(app_dir), "%s/%s", PKG_APPS_DIR, app_name);
+    mkdir(PKG_APPS_DIR, 0777);
+    mkdir(app_dir, 0777);
+
+    char bin_path[512];
+    snprintf(bin_path, sizeof(bin_path), "%s/%s-bin", app_dir, app_binary);
+    snprintf(cmd, sizeof(cmd), "curl -sL \"%s\" -o \"%s\" 2>/dev/null", dl_url, bin_path);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd), "chmod +x \"%s\"", bin_path);
+    system(cmd);
+
+    snprintf(pkg_status, sizeof(pkg_status), "Installed %s v%s", app_name, strlen(app_version) ? app_version : "?");
+
+    int idx = pkg_find_app(app_name);
+    if (idx >= 0) {
+        strncpy(pkg_known[idx].repo, repo, 127);
+        strncpy(pkg_known[idx].version, app_version, 31);
+        strncpy(pkg_known[idx].description, app_desc, 127);
+        pkg_known[idx].installed = 1;
+    } else if (pkg_known_count < MAX_INSTALLED_APPS) {
+        strncpy(pkg_known[pkg_known_count].name, app_name, 63);
+        strncpy(pkg_known[pkg_known_count].repo, repo, 127);
+        strncpy(pkg_known[pkg_known_count].version, app_version, 31);
+        strncpy(pkg_known[pkg_known_count].description, app_desc, 127);
+        pkg_known[pkg_known_count].installed = 1;
+        pkg_known_count++;
+    }
+    pkg_save_installed();
+    pkg_mode = PKG_MODE_DONE;
+}
+
+static void pkg_uninstall(int idx) {
+    if (idx < 0 || idx >= pkg_known_count) return;
+    if (pkg_is_builtin(idx)) { snprintf(pkg_status, sizeof(pkg_status), "Can't uninstall built-in app"); pkg_mode = PKG_MODE_DONE; return; }
+    pkg_mode = PKG_MODE_UNINSTALLING;
+    snprintf(pkg_status, sizeof(pkg_status), "Uninstalling %s...", pkg_known[idx].name);
+    dirty = 1;
+
+    char app_dir[512];
+    snprintf(app_dir, sizeof(app_dir), "%s/%s", PKG_APPS_DIR, pkg_known[idx].name);
+    char cmd[640];
+    snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", app_dir);
+    system(cmd);
+
+    pkg_known[idx].installed = 0;
+    pkg_save_installed();
+
+    snprintf(pkg_status, sizeof(pkg_status), "Uninstalled %s", pkg_known[idx].name);
+    pkg_mode = PKG_MODE_DONE;
+}
+
+static void pkg_draw(int x, int y, int w, int h) {
+    draw_rect(x, y, w, h, COLOR_WHITE);
+
+    draw_rounded_rect(x+10, y+10, 140, 36, 8, COLOR_MID);
+    draw_text_centered_in(x+10, y+18, 140, "Install", COLOR_WHITE, 2);
+
+    if (strlen(pkg_status) > 0) {
+        draw_rounded_rect(x+160, y+10, w-170, 36, 8, COLOR_LIGHT);
+        draw_text(x+168, y+18, pkg_status, COLOR_DARK, 1);
+    }
+
+    int iy = y + 56;
+    int visible = (h - 66) / 50;
+    int total = 0;
+    for (int i = 0; i < pkg_known_count; i++)
+        if (pkg_known[i].installed) total++;
+
+    if (pkg_scroll > total - visible) pkg_scroll = total - visible;
+    if (pkg_scroll < 0) pkg_scroll = 0;
+
+    int shown = 0;
+    for (int i = 0; i < pkg_known_count && iy < y + h - 10; i++) {
+        if (!pkg_known[i].installed) continue;
+        if (shown < pkg_scroll) { shown++; continue; }
+        shown++;
+
+        draw_rounded_rect(x+10, iy, w-20, 44, 8, COLOR_LIGHT);
+        draw_text(x+18, iy+6, pkg_known[i].name, COLOR_BLACK, 2);
+
+        char sub[128];
+        if (pkg_is_builtin(i)) {
+            snprintf(sub, sizeof(sub), "Built-in");
+            draw_text(x+18, iy+24, sub, COLOR_DARK, 1);
+        } else {
+            snprintf(sub, sizeof(sub), "%s", pkg_known[i].repo);
+            draw_text(x+18, iy+24, sub, COLOR_DARK, 1);
+            draw_rounded_rect(x+w-90, iy+6, 70, 32, 8, COLOR_MID);
+            draw_text_centered_in(x+w-90, iy+12, 70, "Remove", COLOR_WHITE, 1);
+        }
+        iy += 50;
+    }
+
+    if (total == 0) {
+        draw_text_centered_in(x, y+h/2, w, "No apps installed", COLOR_MID, 2);
+    }
+}
+
+static void pkg_handle(int tx, int ty, int released) {
+    if (!released) return;
+
+    if (pkg_mode == PKG_MODE_DONE || pkg_mode == PKG_MODE_INSTALLING || pkg_mode == PKG_MODE_UNINSTALLING) {
+        pkg_mode = PKG_MODE_VIEW;
+        pkg_status[0] = 0;
+        return;
+    }
+
+    if (point_in_rect(tx, ty, 10, TOPBAR_H+10, 140, 36)) {
+        pkg_mode = PKG_MODE_INPUT;
+        pkg_input_active = 1;
+        pkg_input_buf[0] = 0;
+        keyboard_visible = 1;
+        keyboard_cursor = 0;
+        strcpy(keyboard_buf, "");
+        return;
+    }
+
+    int iy = TOPBAR_H + 56;
+    int visible = (screen_height - TOPBAR_H - 66) / 50;
+    int shown = 0;
+    for (int i = 0; i < pkg_known_count; i++) {
+        if (!pkg_known[i].installed) continue;
+        if (shown < pkg_scroll) { shown++; continue; }
+        shown++;
+
+        if (iy >= TOPBAR_H + 56 + visible * 50) break;
+
+        if (!pkg_is_builtin(i) && point_in_rect(tx, ty, screen_width-80, iy+6, 70, 32)) {
+            pkg_uninstall(i);
+            return;
+        }
+        iy += 50;
+    }
+}
+
 static void kual_scan_apps(void) {
     DIR *d = opendir("/mnt/us/extensions"); if (!d) return;
     struct dirent *e; int count = 0;
@@ -1014,9 +1290,10 @@ int main(void) {
     sleep(1);
     kual_scan_apps();
     community_scan_apps();
+    pkg_load_installed();
     int saved_app = data_load_appstate();
-    if (saved_app >= 0 && saved_app < 4) {
-        const char *names[] = {"Calculator", "Files", "Network", "Browser"};
+    if (saved_app >= 0 && saved_app < 5) {
+        const char *names[] = {"Calculator", "Files", "Network", "Browser", "Package Manager"};
         for (int i = 0; i < open_count; i++) {
             if (strcmp(open_apps[i]->name, names[saved_app]) == 0) { active_app_idx = i; break; }
         }
@@ -1037,6 +1314,11 @@ int main(void) {
                         if (update_state == 1) { update_handle(touch_x, touch_y, 1); continue; }
                         if (keyboard_visible) {
                             keyboard_handle_touch(touch_x, touch_y);
+                            if (pkg_input_active && !keyboard_visible) {
+                                strncpy(pkg_input_buf, keyboard_buf, sizeof(pkg_input_buf)-1);
+                                pkg_input_active = 0;
+                                if (strlen(pkg_input_buf) > 0) pkg_install(pkg_input_buf);
+                            }
                             if (browser_input_active && !keyboard_visible) {
                                 strncpy(browser_url, keyboard_buf, sizeof(browser_url)-1);
                                 browser_input_active = 0;

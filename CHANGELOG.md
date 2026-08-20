@@ -2,6 +2,19 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.3.0] - 2026-08-20
+
+### Added
+- Package Manager app — install/uninstall external apps from GitHub repos
+- Install by typing `user/repo` — downloads manifest + binary from latest release
+- Uninstall external apps with one tap
+- Built-in apps (Calculator, Files, Network, Browser, Package Manager) cannot be uninstalled
+- Installed apps tracked in `data/installed.cfg`
+- External apps stored in `apps/` directory
+
+### Changed
+- Menu now has 7 items (added Package Manager)
+
 ## [2.2.0] - 2026-08-20
 
 ### Added
