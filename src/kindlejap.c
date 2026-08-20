@@ -17,7 +17,7 @@
 #include <stdint.h>
 #include <sys/mman.h>
 
-#define KINDLEJAP_VERSION "1.2.4"
+#define KINDLEJAP_VERSION "1.2.5"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
