@@ -2,6 +2,12 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.6.1] - 2026-08-20
+
+### Fixed
+- Browser segfault caused by broken word-wrap logic (memmove with negative size)
+- Fixed style/script tag detection
+
 ## [2.6.0] - 2026-08-20
 
 ### Added
