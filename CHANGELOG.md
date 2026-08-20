@@ -2,6 +2,11 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.5.3] - 2026-08-20
+
+### Fixed
+- Keyboard keys now draw single characters instead of remaining string
+
 ## [2.5.2] - 2026-08-20
 
 ### Added

@@ -16,7 +16,7 @@
 #include <math.h>
 #include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "2.5.2"
+#define KINDLEJAP_VERSION "2.5.3"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -542,7 +542,8 @@ void keyboard_draw(void) {
             int by = ky + 116 + row*58;
             unsigned char bg = (keyboard_mode == 2) ? COLOR_LIGHT : COLOR_WHITE;
             draw_rounded_rect(bx, by, bw-4, 52, 8, bg);
-            draw_text_centered_in(bx, by+14, bw-4, &rows[row][i], COLOR_BLACK, 2);
+            char label[2] = {rows[row][i], 0};
+            draw_text_centered_in(bx, by+14, bw-4, label, COLOR_BLACK, 2);
         }
     }
     int spx = 30, spw = screen_width-60;
