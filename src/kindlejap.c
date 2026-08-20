@@ -21,6 +21,9 @@
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
 #define LOGFILE "/mnt/us/kindlejap.log"
+#define DATA_DIR "/mnt/us/extensions/kindlejap/data"
+#define SETTINGS_FILE "/mnt/us/extensions/kindlejap/data/settings.cfg"
+#define APPSTATE_FILE "/mnt/us/extensions/kindlejap/data/appstate.cfg"
 #define COMMUNITY_APPS_DIR "/mnt/us/kindlejap_apps"
 #define TOPBAR_H 40
 #define KEYBOARD_H 290
@@ -38,6 +41,72 @@ static int log_fd = -1;
 void log_msg(const char *msg) {
     if (log_fd < 0) log_fd = open(LOGFILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (log_fd >= 0) { write(log_fd, msg, strlen(msg)); write(log_fd, "\n", 1); fsync(log_fd); }
+}
+
+typedef struct {
+    char last_path[256];
+    char browser_url[256];
+    int file_scroll;
+} AppSettings;
+
+static AppSettings settings;
+
+static void data_init(void) {
+    struct stat st;
+    if (stat(DATA_DIR, &st) != 0) mkdir(DATA_DIR, 0777);
+    memset(&settings, 0, sizeof(settings));
+    strcpy(settings.last_path, "/mnt/us");
+    strcpy(settings.browser_url, "https://");
+}
+
+static void data_save_settings(void) {
+    FILE *f = fopen(SETTINGS_FILE, "w");
+    if (!f) return;
+    fprintf(f, "last_path=%s\n", settings.last_path);
+    fprintf(f, "browser_url=%s\n", settings.browser_url);
+    fprintf(f, "file_scroll=%d\n", settings.file_scroll);
+    fclose(f);
+    log_msg("Settings saved");
+}
+
+static void data_load_settings(void) {
+    FILE *f = fopen(SETTINGS_FILE, "r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0; char *key = line, *val = eq+1;
+        if (strcmp(key, "last_path") == 0) strncpy(settings.last_path, val, sizeof(settings.last_path)-1);
+        else if (strcmp(key, "browser_url") == 0) strncpy(settings.browser_url, val, sizeof(settings.browser_url)-1);
+        else if (strcmp(key, "file_scroll") == 0) settings.file_scroll = atoi(val);
+    }
+    fclose(f);
+    log_msg("Settings loaded");
+}
+
+static void data_save_appstate(int app_idx) {
+    FILE *f = fopen(APPSTATE_FILE, "w");
+    if (!f) return;
+    fprintf(f, "active_app=%d\n", app_idx);
+    fclose(f);
+}
+
+static int data_load_appstate(void) {
+    int idx = -1;
+    FILE *f = fopen(APPSTATE_FILE, "r");
+    if (!f) return -1;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0; char *key = line, *val = eq+1;
+        if (strcmp(key, "active_app") == 0) idx = atoi(val);
+    }
+    fclose(f);
+    return idx;
 }
 
 struct fb_var_screeninfo vinfo;
@@ -934,13 +1003,26 @@ int main(void) {
     init_framebuffer();
     init_input();
     init_power_button();
+    data_init();
+    data_load_settings();
+    strncpy(file_path, settings.last_path, sizeof(file_path)-1);
+    strncpy(browser_url, settings.browser_url, sizeof(browser_url)-1);
+    file_scroll = settings.file_scroll;
     log_msg("Initialized");
     show_splash();
     sleep(1);
     kual_scan_apps();
     community_scan_apps();
+    int saved_app = data_load_appstate();
+    if (saved_app >= 0 && saved_app < 4) {
+        const char *names[] = {"Calculator", "Files", "Network", "Browser"};
+        for (int i = 0; i < open_count; i++) {
+            if (strcmp(open_apps[i]->name, names[saved_app]) == 0) { active_app_idx = i; break; }
+        }
+    }
     log_msg("Apps loaded");
     int touch_x = 0, touch_y = 0;
+    time_t last_save = 0;
     while (running) {
         if (input_fd >= 0) {
             struct input_event ev;
@@ -978,6 +1060,13 @@ int main(void) {
                 }
             }
         }
+        if (time(NULL) - last_save >= 30) {
+            strncpy(settings.last_path, file_path, sizeof(settings.last_path)-1);
+            strncpy(settings.browser_url, browser_url, sizeof(settings.browser_url)-1);
+            settings.file_scroll = file_scroll;
+            data_save_settings();
+            last_save = time(NULL);
+        }
         if (!dirty) { usleep(50000); continue; }
         draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
         if (active_app_idx >= 0 && active_app_idx < open_count) {
@@ -995,6 +1084,11 @@ int main(void) {
     }
     for (int i=open_count-1; i>=0; i--)
         if (open_apps[i]->cleanup) open_apps[i]->cleanup();
+    strncpy(settings.last_path, file_path, sizeof(settings.last_path)-1);
+    strncpy(settings.browser_url, browser_url, sizeof(settings.browser_url)-1);
+    settings.file_scroll = file_scroll;
+    data_save_settings();
+    data_save_appstate(active_app_idx);
     if (input_fd >= 0) close(input_fd);
     if (power_btn_fd >= 0) close(power_btn_fd);
     if (fb_mem && fb_mem != MAP_FAILED) munmap(fb_mem, finfo.smem_len);
