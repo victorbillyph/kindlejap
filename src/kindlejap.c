@@ -15,7 +15,7 @@
 #include <errno.h>
 #include <time.h>
 
-#define KINDLEJAP_VERSION "1.2.0"
+#define KINDLEJAP_VERSION "1.2.1"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
