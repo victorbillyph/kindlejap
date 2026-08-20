@@ -1128,14 +1128,16 @@ static void browser_strip_tags(const char *html) {
             else if (strncasecmp(p, "<pre", 4) == 0) in_pre = 1;
             else if (strncasecmp(p, "</pre>", 6) == 0) in_pre = 0;
 
-            if (!in_pre && (strncasecmp(p, "<br", 3) == 0 || strncasecmp(p, "<p", 2) == 0 ||
-                strncasecmp(p, "<div", 4) == 0 || strncasecmp(p, "<li", 3) == 0 ||
-                strncasecmp(p, "<h", 2) == 0 || strncasecmp(p, "<tr", 3) == 0)) {
-                if (col > 0) {
-                    line_buf[col] = 0;
-                    browser_lines[browser_line_count] = strdup(line_buf);
-                    browser_line_count++;
-                    col = 0;
+            if (!in_pre && !in_style && !in_script) {
+                if (strncasecmp(p, "<br", 3) == 0 || strncasecmp(p, "<p>", 3) == 0 ||
+                    strncasecmp(p, "<p ", 3) == 0 || strncasecmp(p, "<div", 4) == 0 ||
+                    strncasecmp(p, "<li", 3) == 0 || strncasecmp(p, "<h", 2) == 0 ||
+                    strncasecmp(p, "<tr", 3) == 0 || strncasecmp(p, "<hr", 3) == 0) {
+                    if (col > 0) {
+                        line_buf[col] = 0;
+                        browser_lines[browser_line_count++] = strdup(line_buf);
+                        col = 0;
+                    }
                 }
             }
 
@@ -1144,14 +1146,12 @@ static void browser_strip_tags(const char *html) {
                 if (href) {
                     href += 6;
                     const char *end = strchr(href, '"');
-                    if (end) {
+                    if (end && (end - href) > 0 && (end - href) < 255) {
                         int l = end - href;
-                        if (l < 255) {
-                            strncpy(browser_links[browser_link_count].url, href, l);
-                            browser_links[browser_link_count].url[l] = 0;
-                            browser_links[browser_link_count].line = browser_line_count;
-                            browser_link_count++;
-                        }
+                        strncpy(browser_links[browser_link_count].url, href, l);
+                        browser_links[browser_link_count].url[l] = 0;
+                        browser_links[browser_link_count].line = browser_line_count;
+                        browser_link_count++;
                     }
                 }
             }
@@ -1160,66 +1160,45 @@ static void browser_strip_tags(const char *html) {
             p++;
             continue;
         }
-        if (*p == '>') { in_tag = 0; in_style = 0; in_script = 0; p++; continue; }
+        if (*p == '>') { in_tag = 0; p++; continue; }
         if (in_tag || in_style || in_script) { p++; continue; }
 
         if (*p == '&') {
-            if (strncasecmp(p, "&amp;", 5) == 0) { line_buf[col++] = '&'; p += 5; }
-            else if (strncasecmp(p, "&lt;", 4) == 0) { line_buf[col++] = '<'; p += 4; }
-            else if (strncasecmp(p, "&gt;", 4) == 0) { line_buf[col++] = '>'; p += 4; }
-            else if (strncasecmp(p, "&nbsp;", 6) == 0) { line_buf[col++] = ' '; p += 6; }
-            else if (strncasecmp(p, "&quot;", 6) == 0) { line_buf[col++] = '"'; p += 6; }
-            else { line_buf[col++] = *p; p++; }
-            if (col >= max_cols - 1) {
-                line_buf[col] = 0;
-                browser_lines[browser_line_count] = strdup(line_buf);
-                browser_line_count++;
-                col = 0;
-            }
+            if (strncasecmp(p, "&amp;", 5) == 0) { if (col < max_cols-1) line_buf[col++] = '&'; p += 5; }
+            else if (strncasecmp(p, "&lt;", 4) == 0) { if (col < max_cols-1) line_buf[col++] = '<'; p += 4; }
+            else if (strncasecmp(p, "&gt;", 4) == 0) { if (col < max_cols-1) line_buf[col++] = '>'; p += 4; }
+            else if (strncasecmp(p, "&nbsp;", 6) == 0) { if (col < max_cols-1) line_buf[col++] = ' '; p += 6; }
+            else if (strncasecmp(p, "&quot;", 6) == 0) { if (col < max_cols-1) line_buf[col++] = '"'; p += 6; }
+            else { if (col < max_cols-1) line_buf[col++] = *p; p++; }
             continue;
         }
 
         if (*p == '\n' || *p == '\r') {
-            if (in_pre) {
-                if (col > 0) {
-                    line_buf[col] = 0;
-                    browser_lines[browser_line_count] = strdup(line_buf);
-                    browser_line_count++;
-                    col = 0;
-                }
+            if (in_pre && col > 0) {
+                line_buf[col] = 0;
+                browser_lines[browser_line_count++] = strdup(line_buf);
+                col = 0;
             }
             p++; continue;
         }
 
-        if (*p == ' ' && col > 0 && line_buf[col-1] == ' ') { p++; continue; }
-
         if (!in_pre && *p == ' ' && col == 0) { p++; continue; }
 
-        if (col < max_cols - 1) line_buf[col++] = *p;
-
-        if (!in_pre && col >= max_cols - 1) {
-            const char *last_space = NULL;
-            for (int i = col - 1; i > col - 30 && i >= 0; i--)
-                if (line_buf[i] == ' ') { last_space = &line_buf[i]; break; }
-            int cut;
-            if (last_space) cut = last_space - line_buf;
-            else cut = col;
-            line_buf[cut] = 0;
-            browser_lines[browser_line_count] = strdup(line_buf);
-            browser_line_count++;
+        if (col < max_cols - 1) {
+            line_buf[col++] = *p;
+        } else if (!in_pre) {
+            line_buf[col] = 0;
+            browser_lines[browser_line_count++] = strdup(line_buf);
             col = 0;
-            if (last_space) {
-                int rem = (col < max_cols) ? (cut + 1) : 0;
-                memmove(line_buf, line_buf + cut + 1, col - cut);
-                col = col - cut - 1;
+            if (*p != ' ') {
+                line_buf[col++] = *p;
             }
         }
         p++;
     }
     if (col > 0 && browser_line_count < BROWSER_MAX_LINES) {
         line_buf[col] = 0;
-        browser_lines[browser_line_count] = strdup(line_buf);
-        browser_line_count++;
+        browser_lines[browser_line_count++] = strdup(line_buf);
     }
 }
 
