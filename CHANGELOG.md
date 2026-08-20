@@ -2,6 +2,24 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.2.0] - 2026-08-20
+
+### Added
+- Persistent data storage (`data/` folder) for settings and app state
+- Auto-save every 30 seconds + on exit
+- Restores last active app, file explorer path, browser URL on startup
+- `settings.cfg` and `appstate.cfg` files in data directory
+
+### Fixed
+- All centered text now renders inside its correct area (keyboard, calculator, menu, downbar, update dialog, browser)
+- Replaced broken `draw_text_centered` with `draw_text_centered_in(x,y,w,...)`
+
+### Changed
+- Removed bottom taskbar — full screen space for apps
+- Topbar shows WiFi + battery
+- Power button opens downbar with Menu / Sleep / Exit
+- Menu accessible only through power button downbar
+
 ## [2.1.0] - 2026-08-19
 
 ### Fixed
