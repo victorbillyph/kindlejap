@@ -890,8 +890,6 @@ static int check_update(void) {
 
 static void do_update(void) {
     update_state = 2;
-    char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "%s \"%s\" \"%s\"", UPDATE_SCRIPT, KINDLEJAP_VERSION, update_download_url);
     log_msg("running update");
     restore_kindle_ui();
     release_lock();
@@ -899,8 +897,6 @@ static void do_update(void) {
     if (fb_fd >= 0) { close(fb_fd); fb_fd = -1; }
     if (input_fd >= 0) { close(input_fd); input_fd = -1; }
     execl(UPDATE_SCRIPT, "update.sh", KINDLEJAP_VERSION, update_download_url, NULL);
-    system(cmd);
-    execl("/mnt/us/extensions/kindlejap/bin/kindlejap.sh", "kindlejap.sh", NULL);
     _exit(0);
 }
 

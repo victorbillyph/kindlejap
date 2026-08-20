@@ -75,4 +75,5 @@ echo "Cleaning up..."
 rm -rf "$TEMP_DIR"
 
 echo "Update complete!"
-exit 0
+echo "Restarting KindleJap..."
+exec "$EXTENSION_DIR/bin/kindlejap.sh"
