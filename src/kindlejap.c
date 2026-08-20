@@ -475,9 +475,9 @@ void draw_text(int x, int y, const char *t, unsigned char c, int s) {
     while (*t) { draw_char(x, y, *t, c, s); x += FONT_W*s; t++; }
 }
 
-void draw_text_centered(int y, const char *t, unsigned char c, int s) {
-    int w = (int)strlen(t) * FONT_W * s;
-    draw_text((screen_width-w)/2, y, t, c, s);
+void draw_text_centered_in(int x, int y, int w, const char *t, unsigned char c, int s) {
+    int tw = (int)strlen(t) * FONT_W * s;
+    draw_text(x + (w-tw)/2, y, t, c, s);
 }
 
 void draw_text_right(int xl, int y, const char *t, unsigned char c, int s) {
@@ -519,20 +519,20 @@ void keyboard_draw(void) {
             char c = keyboard_shift ? kb_rows[row][i] : (kb_rows[row][i]+32);
             char label[2] = {c, 0};
             draw_rounded_rect(bx, by, bw-4, 52, 8, COLOR_WHITE);
-            draw_text_centered(by+14, label, COLOR_BLACK, 2);
+            draw_text_centered_in(bx, by+14, bw-4, label, COLOR_BLACK, 2);
         }
     }
     int sx = screen_width - bw*2 - 30;
     int sy = ky + 58 + 2*58;
     draw_rounded_rect(sx, sy, bw*2-4, 52, 8, COLOR_DARK);
-    draw_text_centered(sy+14, "SPACE", COLOR_WHITE, 2);
+    draw_text_centered_in(sx, sy+14, bw*2-4, "SPACE", COLOR_WHITE, 2);
     draw_rounded_rect(20, sy, bw*2-4, 52, 8, COLOR_MID);
     char sh[2] = { keyboard_shift ? 'A' : 'a', 0 };
-    draw_text_centered(sy+14, sh, COLOR_WHITE, 2);
+    draw_text_centered_in(20, sy+14, bw*2-4, sh, COLOR_WHITE, 2);
     draw_rounded_rect(screen_width-bw*2-50, ky+58, bw*2-4, 52, 8, COLOR_DARK);
-    draw_text_centered(ky+58+14, "BACK", COLOR_WHITE, 2);
+    draw_text_centered_in(screen_width-bw*2-50, ky+58+14, bw*2-4, "BACK", COLOR_WHITE, 2);
     draw_rounded_rect(30, ky+14, 60, 30, 8, COLOR_MID);
-    draw_text_centered(ky+18, "X", COLOR_WHITE, 2);
+    draw_text_centered_in(30, ky+18, 60, "X", COLOR_WHITE, 2);
 }
 
 void keyboard_handle_touch(int tx, int ty) {
@@ -653,11 +653,11 @@ static void downbar_draw(void) {
     if (!downbar_visible) return;
     draw_rect(0, TOPBAR_H, screen_width, 60, COLOR_LIGHT);
     draw_rounded_rect(10, TOPBAR_H+10, 100, 40, 8, COLOR_WHITE);
-    draw_text(20, TOPBAR_H+18, "Menu", COLOR_BLACK, 2);
+    draw_text_centered_in(10, TOPBAR_H+18, 100, "Menu", COLOR_BLACK, 2);
     draw_rounded_rect(screen_width/2-50, TOPBAR_H+10, 100, 40, 8, COLOR_WHITE);
-    draw_text(screen_width/2-40, TOPBAR_H+18, "Sleep", COLOR_BLACK, 2);
+    draw_text_centered_in(screen_width/2-50, TOPBAR_H+18, 100, "Sleep", COLOR_BLACK, 2);
     draw_rounded_rect(screen_width-110, TOPBAR_H+10, 100, 40, 8, COLOR_WHITE);
-    draw_text(screen_width-100, TOPBAR_H+18, "Exit", COLOR_BLACK, 2);
+    draw_text_centered_in(screen_width-110, TOPBAR_H+18, 100, "Exit", COLOR_BLACK, 2);
 }
 
 static void menu_draw(void) {
@@ -669,7 +669,7 @@ static void menu_draw(void) {
     for (int i=0; i<6; i++) {
         int iy = my + 10 + i*46;
         draw_rounded_rect(mx+10, iy, mw-20, 40, 8, COLOR_LIGHT);
-        draw_text(mx+20, iy+10, items[i], COLOR_BLACK, 2);
+        draw_text_centered_in(mx+10, iy+10, mw-20, items[i], COLOR_BLACK, 2);
     }
 }
 
@@ -759,9 +759,9 @@ static void update_draw(void) {
     draw_text(dx+20, dy+20, "Update Available", COLOR_BLACK, 3);
     draw_text(dx+20, dy+70, update_version, COLOR_DARK, 2);
     draw_rounded_rect(dx+20, dy+120, 170, 50, 8, COLOR_MID);
-    draw_text_centered(dy+132, "Install", COLOR_WHITE, 2);
+    draw_text_centered_in(dx+20, dy+132, 170, "Install", COLOR_WHITE, 2);
     draw_rounded_rect(dx+210, dy+120, 170, 50, 8, COLOR_LIGHT);
-    draw_text_centered(dy+132, "Cancel", COLOR_DARK, 2);
+    draw_text_centered_in(dx+210, dy+132, 170, "Cancel", COLOR_DARK, 2);
 }
 
 static void update_handle(int tx, int ty, int released) {
@@ -939,9 +939,9 @@ static void browser_draw(int x, int y, int w, int h) {
     draw_rounded_rect(x+10, y+10, w-20, 36, 8, COLOR_LIGHT);
     draw_text(x+18, y+16, browser_url, COLOR_BLACK, 2);
     if (browser_input_active) {
-        draw_text_centered(y+80, "Type URL and press Enter", COLOR_MID, 2);
+        draw_text_centered_in(x, y+80, w, "Type URL and press Enter", COLOR_MID, 2);
     } else {
-        draw_text_centered(y+80, "Tap URL bar to type", COLOR_MID, 2);
+        draw_text_centered_in(x, y+80, w, "Tap URL bar to type", COLOR_MID, 2);
     }
 }
 
@@ -978,9 +978,9 @@ void handle_segfault(int sig) { log_msg("SEGFAULT"); restore_kindle_ui(); exit(1
 
 static void show_splash(void) {
     draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
-    draw_text_centered(screen_height/2 - 60, "KindleJap", COLOR_BLACK, 5);
-    draw_text_centered(screen_height/2 + 10, KINDLEJAP_VERSION, COLOR_MID, 3);
-    draw_text_centered(screen_height/2 + 60, "Loading...", COLOR_MID, 2);
+    draw_text_centered_in(0, screen_height/2 - 60, screen_width, "KindleJap", COLOR_BLACK, 5);
+    draw_text_centered_in(0, screen_height/2 + 10, screen_width, KINDLEJAP_VERSION, COLOR_MID, 3);
+    draw_text_centered_in(0, screen_height/2 + 60, screen_width, "Loading...", COLOR_MID, 2);
     refresh_screen();
 }
 
