@@ -13,38 +13,31 @@
 #include <dirent.h>
 #include <pthread.h>
 #include <errno.h>
-#include <time.h>
 #include <stdint.h>
-#include <sys/mman.h>
+#include <math.h>
+#include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "1.2.6"
+#define KINDLEJAP_VERSION "2.0.0"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
 #define LOGFILE "/mnt/us/kindlejap.log"
-#define LOGFILE2 "/tmp/kindlejap_app.log"
+#define APPS_DIR "/mnt/us/extensions/kindlejap/apps"
+#define COMMUNITY_APPS_DIR "/mnt/us/kindlejap_apps"
+
+#define TASKBAR_H 56
+#define KEYBOARD_H 340
+#define COLOR_BLACK 0x00
+#define COLOR_WHITE 0xFF
+#define COLOR_GRAY 0x80
+#define COLOR_LIGHT 0xC0
+#define COLOR_DARK 0x40
+#define COLOR_SELECT 0x60
 
 static int log_fd = -1;
-static FILE *logfp = NULL;
-static int log_initialized = 0;
-
 void log_msg(const char *msg) {
-    if (log_fd < 0) {
-        log_fd = open(LOGFILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    }
-    if (log_fd >= 0) {
-        write(log_fd, msg, strlen(msg));
-        write(log_fd, "\n", 1);
-        fsync(log_fd);
-    }
-    if (!logfp) {
-        logfp = fopen(LOGFILE, "a");
-        log_initialized = 1;
-    }
-    if (logfp) {
-        fprintf(logfp, "%s\n", msg);
-        fflush(logfp);
-    }
+    if (log_fd < 0) log_fd = open(LOGFILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (log_fd >= 0) { write(log_fd, msg, strlen(msg)); write(log_fd, "\n", 1); fsync(log_fd); }
 }
 
 struct fb_var_screeninfo vinfo;
@@ -54,1135 +47,917 @@ unsigned char *fb_mem = NULL;
 int screen_width, screen_height, bytes_per_pixel;
 int input_fd = -1;
 volatile int running = 1;
-volatile int menu_visible = 0;
-volatile int menu_expanded = 0;
-int touch_last_x = 0;
-int touch_last_y = 0;
-volatile int show_update_dialog = 0;
-volatile int update_available = 0;
-volatile int update_downloading = 0;
-volatile int update_progress = 0;
-char latest_version[32] = "";
-char update_notes[1024] = "";
-volatile int splash_done = 0;
+int lock_fd = -1;
 
-typedef struct {
-    const char *name;
-    int x, y, w, h;
-    int active;
-    void (*action)(void);
-} MenuItem;
-
-MenuItem menu_items[5];
-int menu_item_count = 0;
-
-#define COLOR_BLACK   0x00
-#define COLOR_WHITE   0xFF
-#define COLOR_GRAY    0x80
-#define COLOR_LIGHT   0xC0
-#define COLOR_DARK    0x40
-
-#define TASKBAR_HEIGHT 60
-#define MENU_BUTTON_WIDTH 80
-
-void init_framebuffer(void);
-void init_input(void);
-void cleanup(void);
-void draw_rect(int x, int y, int w, int h, unsigned char color);
-void draw_char(int x, int y, char c, unsigned char color, int scale);
-void draw_text(int x, int y, const char *text, unsigned char color, int scale);
-void draw_taskbar(void);
-void draw_menu(void);
-void draw_update_dialog(void);
-void handle_touch(int x, int y, int pressed);
-void action_exit(void);
-void action_apps(void);
-void action_settings(void);
-void action_check_update(void);
-void action_update_now(void);
-void action_update_yes(void);
-void action_update_no(void);
-void redraw_screen(void);
-void signal_handler(int sig);
-int check_for_updates(void);
-int compare_versions(const char *v1, const char *v2);
-void show_splash(void);
-void show_init_status(const char *msg);
-int acquire_lock(void);
-void release_lock(void);
-void restore_kindle_ui(void);
-void refresh_screen(void);
-void refresh_screen_partial(void);
-
-struct mxcfb_rect {
-    uint32_t top;
-    uint32_t left;
-    uint32_t width;
-    uint32_t height;
-};
-
-struct mxcfb_alt_buffer_data {
-    uint32_t phys_addr;
-    uint32_t width;
-    uint32_t height;
-    struct mxcfb_rect alt_update_region;
-};
-
+struct mxcfb_rect { uint32_t top, left, width, height; };
+struct mxcfb_alt_buffer_data { uint32_t phys_addr, width, height; struct mxcfb_rect alt_update_region; };
 struct mxcfb_update_data {
-    struct mxcfb_rect update_region;
-    uint32_t waveform_mode;
-    uint32_t update_mode;
-    uint32_t update_marker;
-    uint32_t hist_bw_waveform_mode;
-    uint32_t hist_gray_waveform_mode;
-    int temp;
-    unsigned int flags;
+    struct mxcfb_rect update_region; uint32_t waveform_mode, update_mode, update_marker;
+    uint32_t hist_bw_waveform_mode, hist_gray_waveform_mode; int temp; unsigned int flags;
     struct mxcfb_alt_buffer_data alt_buffer_data;
 };
-
 struct mxcfb_update_data_zelda {
-    struct mxcfb_rect update_region;
-    uint32_t waveform_mode;
-    uint32_t update_mode;
-    uint32_t update_marker;
-    int temp;
-    unsigned int flags;
-    int dither_mode;
-    int quant_bit;
+    struct mxcfb_rect update_region; uint32_t waveform_mode, update_mode, update_marker;
+    int temp; unsigned int flags; int dither_mode, quant_bit;
     struct mxcfb_alt_buffer_data alt_buffer_data;
-    uint32_t hist_bw_waveform_mode;
-    uint32_t hist_gray_waveform_mode;
-    uint32_t ts_pxp;
-    uint32_t ts_epdc;
+    uint32_t hist_bw_waveform_mode, hist_gray_waveform_mode, ts_pxp, ts_epdc;
 };
-
-struct mxcfb_update_marker_data {
-    uint32_t update_marker;
-    uint32_t collision_test;
-};
+struct mxcfb_update_marker_data { uint32_t update_marker, collision_test; };
 
 #define MXCFB_SEND_UPDATE_K51     1078478382
 #define MXCFB_SEND_UPDATE_ZELDA   1079526958
 #define MXCFB_WAIT_COMPLETE_CARTA 3221767727
 #define MXCFB_WAIT_COMPLETE_PEARL 1074021935
-#define MXCFB_WAIT_SUBMISSION     1074021943
-
-#define WFM_INIT     0
-#define WFM_DU       1
-#define WFM_GC16     2
+#define WFM_GC16 2
 #define WFM_GC16_FAST 3
-#define WFM_A2       4
-#define WFM_GL16     5
-#define WFM_REAGL    8
-
 #define UPD_PARTIAL 0
-#define UPD_FULL    1
-
-#define TEMP_USE_AMBIENT 4096
-#define TEMP_USE_AUTO    4097
-
-static const unsigned char font5x7[][7] = {
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
-    {0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04},
-    {0x08, 0x14, 0x22, 0x22, 0x3E, 0x22, 0x22},
-    {0x1C, 0x22, 0x22, 0x1C, 0x22, 0x22, 0x1C},
-    {0x1C, 0x22, 0x20, 0x20, 0x20, 0x22, 0x1C},
-    {0x18, 0x24, 0x22, 0x22, 0x22, 0x24, 0x18},
-    {0x3E, 0x20, 0x20, 0x3C, 0x20, 0x20, 0x3E},
-    {0x3E, 0x20, 0x20, 0x3C, 0x20, 0x20, 0x20},
-    {0x1C, 0x22, 0x20, 0x2E, 0x22, 0x22, 0x1C},
-    {0x22, 0x22, 0x22, 0x3E, 0x22, 0x22, 0x22},
-    {0x1C, 0x08, 0x08, 0x08, 0x08, 0x08, 0x1C},
-    {0x02, 0x02, 0x02, 0x02, 0x02, 0x22, 0x1C},
-    {0x22, 0x24, 0x28, 0x30, 0x28, 0x24, 0x22},
-    {0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x3E},
-    {0x22, 0x36, 0x2A, 0x2A, 0x22, 0x22, 0x22},
-    {0x22, 0x32, 0x2A, 0x26, 0x22, 0x22, 0x22},
-    {0x1C, 0x22, 0x22, 0x22, 0x22, 0x22, 0x1C},
-    {0x1C, 0x22, 0x22, 0x1C, 0x20, 0x20, 0x20},
-    {0x1C, 0x22, 0x22, 0x22, 0x2A, 0x24, 0x1A},
-    {0x1C, 0x22, 0x22, 0x1C, 0x28, 0x24, 0x22},
-    {0x1C, 0x22, 0x20, 0x1C, 0x02, 0x22, 0x1C},
-    {0x3E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08},
-    {0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x1C},
-    {0x22, 0x22, 0x22, 0x22, 0x22, 0x14, 0x08},
-    {0x22, 0x22, 0x22, 0x2A, 0x2A, 0x36, 0x22},
-    {0x22, 0x22, 0x14, 0x08, 0x14, 0x22, 0x22},
-    {0x22, 0x22, 0x14, 0x08, 0x08, 0x08, 0x08},
-    {0x3E, 0x02, 0x04, 0x08, 0x10, 0x20, 0x3E},
-    {0x08, 0x14, 0x22, 0x22, 0x3E, 0x22, 0x22},
-    {0x1C, 0x22, 0x22, 0x1C, 0x22, 0x22, 0x1C},
-    {0x1C, 0x22, 0x20, 0x20, 0x20, 0x22, 0x1C},
-    {0x18, 0x24, 0x22, 0x22, 0x22, 0x24, 0x18},
-    {0x3E, 0x20, 0x20, 0x3C, 0x20, 0x20, 0x3E},
-    {0x3E, 0x20, 0x20, 0x3C, 0x20, 0x20, 0x20},
-    {0x1C, 0x22, 0x20, 0x2E, 0x22, 0x22, 0x1C},
-    {0x22, 0x22, 0x22, 0x3E, 0x22, 0x22, 0x22},
-    {0x1C, 0x08, 0x08, 0x08, 0x08, 0x08, 0x1C},
-    {0x02, 0x02, 0x02, 0x02, 0x02, 0x22, 0x1C},
-    {0x22, 0x24, 0x28, 0x30, 0x28, 0x24, 0x22},
-    {0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x3E},
-    {0x22, 0x36, 0x2A, 0x2A, 0x22, 0x22, 0x22},
-    {0x22, 0x32, 0x2A, 0x26, 0x22, 0x22, 0x22},
-    {0x1C, 0x22, 0x22, 0x22, 0x22, 0x22, 0x1C},
-    {0x1C, 0x22, 0x22, 0x1C, 0x20, 0x20, 0x20},
-    {0x1C, 0x22, 0x22, 0x22, 0x2A, 0x24, 0x1A},
-    {0x1C, 0x22, 0x22, 0x1C, 0x28, 0x24, 0x22},
-    {0x1C, 0x22, 0x20, 0x1C, 0x02, 0x22, 0x1C},
-    {0x3E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08},
-    {0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x1C},
-    {0x22, 0x22, 0x22, 0x22, 0x22, 0x14, 0x08},
-    {0x22, 0x22, 0x22, 0x2A, 0x2A, 0x36, 0x22},
-    {0x22, 0x22, 0x14, 0x08, 0x14, 0x22, 0x22},
-    {0x22, 0x22, 0x14, 0x08, 0x08, 0x08, 0x08},
-    {0x3E, 0x02, 0x04, 0x08, 0x10, 0x20, 0x3E},
-    {0x1C, 0x22, 0x26, 0x2A, 0x32, 0x22, 0x1C},
-    {0x08, 0x18, 0x08, 0x08, 0x08, 0x08, 0x1C},
-    {0x1C, 0x22, 0x02, 0x0C, 0x10, 0x20, 0x3E},
-    {0x3E, 0x02, 0x04, 0x0C, 0x02, 0x22, 0x1C},
-    {0x04, 0x0C, 0x14, 0x24, 0x3E, 0x04, 0x04},
-    {0x3E, 0x20, 0x3C, 0x02, 0x02, 0x22, 0x1C},
-    {0x0C, 0x10, 0x20, 0x3C, 0x22, 0x22, 0x1C},
-    {0x3E, 0x02, 0x04, 0x08, 0x10, 0x10, 0x10},
-    {0x1C, 0x22, 0x22, 0x1C, 0x22, 0x22, 0x1C},
-    {0x1C, 0x22, 0x22, 0x1E, 0x02, 0x04, 0x18},
-};
+#define UPD_FULL 1
 
 static uint32_t refresh_marker = 0;
 static int mxcfb_mode = 0;
 
 static int do_refresh(int full, int wfm) {
     if (fb_fd < 0) return -1;
-
     refresh_marker++;
     if (refresh_marker > 0xFFFFFFFF) refresh_marker = 1;
-
-    char buf[128];
-
     if (mxcfb_mode == 0 || mxcfb_mode == 1) {
-        struct mxcfb_update_data data;
-        memset(&data, 0, sizeof(data));
-        data.update_region.top = 0;
-        data.update_region.left = 0;
-        data.update_region.width = screen_width;
-        data.update_region.height = screen_height;
-        data.waveform_mode = wfm;
-        data.update_mode = full ? UPD_FULL : UPD_PARTIAL;
-        data.update_marker = refresh_marker;
-        data.hist_bw_waveform_mode = WFM_DU;
-        data.hist_gray_waveform_mode = full ? WFM_GC16 : WFM_GC16_FAST;
-        data.temp = TEMP_USE_AUTO;
-        data.flags = 0;
-
-        int ret = ioctl(fb_fd, MXCFB_SEND_UPDATE_K51, &data);
-        snprintf(buf, sizeof(buf), "refresh: K51 SEND ret=%d errno=%d sizeof=%zu", ret, (int)errno, sizeof(data));
-        log_msg(buf);
-
-        if (ret == 0) {
-            mxcfb_mode = 1;
-            struct mxcfb_update_marker_data md;
-            md.update_marker = refresh_marker;
-            md.collision_test = 0;
-            ret = ioctl(fb_fd, MXCFB_WAIT_COMPLETE_CARTA, &md);
-            snprintf(buf, sizeof(buf), "refresh: CARTA WAIT ret=%d errno=%d", ret, (int)errno);
-            log_msg(buf);
-            return 0;
+        struct mxcfb_update_data d;
+        memset(&d, 0, sizeof(d));
+        d.update_region.width = screen_width; d.update_region.height = screen_height;
+        d.waveform_mode = wfm; d.update_mode = full ? UPD_FULL : UPD_PARTIAL;
+        d.update_marker = refresh_marker; d.hist_bw_waveform_mode = 1;
+        d.hist_gray_waveform_mode = full ? WFM_GC16 : WFM_GC16_FAST;
+        d.temp = 4097; if (ioctl(fb_fd, MXCFB_SEND_UPDATE_K51, &d) == 0) {
+            mxcfb_mode = 1; struct mxcfb_update_marker_data md = {refresh_marker, 0};
+            ioctl(fb_fd, MXCFB_WAIT_COMPLETE_CARTA, &md); return 0;
         }
-
-        struct mxcfb_update_data_zelda data_z;
-        memset(&data_z, 0, sizeof(data_z));
-        data_z.update_region.top = 0;
-        data_z.update_region.left = 0;
-        data_z.update_region.width = screen_width;
-        data_z.update_region.height = screen_height;
-        data_z.waveform_mode = wfm;
-        data_z.update_mode = full ? UPD_FULL : UPD_PARTIAL;
-        data_z.update_marker = refresh_marker;
-        data_z.temp = TEMP_USE_AMBIENT;
-        data_z.flags = 0;
-        data_z.dither_mode = 0;
-        data_z.quant_bit = 0;
-        data_z.hist_bw_waveform_mode = WFM_DU;
-        data_z.hist_gray_waveform_mode = full ? WFM_GC16 : WFM_GC16_FAST;
-
-        ret = ioctl(fb_fd, MXCFB_SEND_UPDATE_ZELDA, &data_z);
-        snprintf(buf, sizeof(buf), "refresh: ZELDA SEND ret=%d errno=%d sizeof=%zu", ret, (int)errno, sizeof(data_z));
-        log_msg(buf);
-
-        if (ret == 0) {
-            mxcfb_mode = 2;
-            struct mxcfb_update_marker_data md;
-            md.update_marker = refresh_marker;
-            md.collision_test = 0;
-            ret = ioctl(fb_fd, MXCFB_WAIT_COMPLETE_CARTA, &md);
-            snprintf(buf, sizeof(buf), "refresh: CARTA WAIT ret=%d errno=%d", ret, (int)errno);
-            log_msg(buf);
-            return 0;
-        }
-
-        snprintf(buf, sizeof(buf), "refresh: BOTH modes failed, trying PEARL wait");
-        log_msg(buf);
-    }
-
-    if (mxcfb_mode == 1) {
-        struct mxcfb_update_data data;
-        memset(&data, 0, sizeof(data));
-        data.update_region.top = 0;
-        data.update_region.left = 0;
-        data.update_region.width = screen_width;
-        data.update_region.height = screen_height;
-        data.waveform_mode = wfm;
-        data.update_mode = full ? UPD_FULL : UPD_PARTIAL;
-        data.update_marker = refresh_marker;
-        data.hist_bw_waveform_mode = WFM_DU;
-        data.hist_gray_waveform_mode = full ? WFM_GC16 : WFM_GC16_FAST;
-        data.temp = TEMP_USE_AUTO;
-        data.flags = 0;
-
-        int ret = ioctl(fb_fd, MXCFB_SEND_UPDATE_K51, &data);
-        if (ret == 0) {
-            uint32_t mk = refresh_marker;
-            ret = ioctl(fb_fd, MXCFB_WAIT_COMPLETE_PEARL, &mk);
-            snprintf(buf, sizeof(buf), "refresh: PEARL WAIT ret=%d errno=%d", ret, (int)errno);
-            log_msg(buf);
-            return 0;
+        struct mxcfb_update_data_zelda dz;
+        memset(&dz, 0, sizeof(dz));
+        dz.update_region.width = screen_width; dz.update_region.height = screen_height;
+        dz.waveform_mode = wfm; dz.update_mode = full ? UPD_FULL : UPD_PARTIAL;
+        dz.update_marker = refresh_marker; dz.temp = 4096; dz.flags = 0;
+        dz.hist_bw_waveform_mode = 1; dz.hist_gray_waveform_mode = full ? WFM_GC16 : WFM_GC16_FAST;
+        if (ioctl(fb_fd, MXCFB_SEND_UPDATE_ZELDA, &dz) == 0) {
+            mxcfb_mode = 2; struct mxcfb_update_marker_data md = {refresh_marker, 0};
+            ioctl(fb_fd, MXCFB_WAIT_COMPLETE_CARTA, &md); return 0;
         }
     }
-
-    if (mxcfb_mode == 2) {
-        struct mxcfb_update_data_zelda data_z;
-        memset(&data_z, 0, sizeof(data_z));
-        data_z.update_region.top = 0;
-        data_z.update_region.left = 0;
-        data_z.update_region.width = screen_width;
-        data_z.update_region.height = screen_height;
-        data_z.waveform_mode = wfm;
-        data_z.update_mode = full ? UPD_FULL : UPD_PARTIAL;
-        data_z.update_marker = refresh_marker;
-        data_z.temp = TEMP_USE_AMBIENT;
-        data_z.flags = 0;
-        data_z.dither_mode = 0;
-        data_z.quant_bit = 0;
-
-        int ret = ioctl(fb_fd, MXCFB_SEND_UPDATE_ZELDA, &data_z);
-        if (ret == 0) {
-            uint32_t mk = refresh_marker;
-            ret = ioctl(fb_fd, MXCFB_WAIT_COMPLETE_PEARL, &mk);
-            snprintf(buf, sizeof(buf), "refresh: PEARL WAIT ret=%d errno=%d", ret, (int)errno);
-            log_msg(buf);
-            return 0;
-        }
-    }
-
-    log_msg("refresh: ALL methods failed");
     return -1;
 }
-
-void refresh_screen(void) {
-    log_msg("refresh_screen: enter");
-    do_refresh(1, WFM_GC16);
-    log_msg("refresh_screen: exit");
-}
-
-void refresh_screen_partial(void) {
-    log_msg("refresh_partial: enter");
-    do_refresh(0, WFM_GC16_FAST);
-    log_msg("refresh_partial: exit");
-}
+void refresh_screen(void) { do_refresh(1, WFM_GC16); }
+void refresh_screen_partial(void) { do_refresh(0, WFM_GC16_FAST); }
 
 int acquire_lock(void) {
-    log_msg("acquire_lock: opening " LOCKFILE);
-    int fd = open(LOCKFILE, O_CREAT | O_RDWR, 0644);
-    if (fd < 0) {
-        log_msg("acquire_lock: failed to open lockfile");
-        return -1;
-    }
-
-    struct flock fl;
-    fl.l_type = F_WRLCK;
-    fl.l_whence = SEEK_SET;
-    fl.l_start = 0;
-    fl.l_len = 0;
-
-    if (fcntl(fd, F_SETLK, &fl) < 0) {
-        log_msg("acquire_lock: lock held by another process");
-        close(fd);
-        return -1;
-    }
-
-    char pid_str[16];
-    snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
-    ftruncate(fd, 0);
-    write(fd, pid_str, strlen(pid_str));
-
-    log_msg("acquire_lock: lock acquired");
-    return fd;
+    lock_fd = open(LOCKFILE, O_CREAT | O_RDWR, 0644);
+    if (lock_fd < 0) return -1;
+    struct flock fl = {F_WRLCK, SEEK_SET, 0, 0};
+    if (fcntl(lock_fd, F_SETLK, &fl) < 0) { close(lock_fd); lock_fd = -1; return -1; }
+    char s[16]; snprintf(s, sizeof(s), "%d", getpid());
+    ftruncate(lock_fd, 0); write(lock_fd, s, strlen(s));
+    return 0;
 }
-
-void release_lock(void) {
-    unlink(LOCKFILE);
-}
+void release_lock(void) { if (lock_fd >= 0) { close(lock_fd); lock_fd = -1; } unlink(LOCKFILE); }
 
 void restore_kindle_ui(void) {
-    printf("Restoring Kindle UI...\n");
     system("initctl start lab126_gui 2>/dev/null");
-    system("initctl start otaupd 2>/dev/null");
-    system("initctl start phd 2>/dev/null");
-    system("initctl start tmd 2>/dev/null");
-    system("initctl start todo 2>/dev/null");
+    system("initctl start otaupd 2>/dev/null"); system("initctl start phd 2>/dev/null");
+    system("initctl start tmd 2>/dev/null"); system("initctl start todo 2>/dev/null");
     system("initctl start mcsd 2>/dev/null");
     system("lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null");
 }
 
 void init_framebuffer(void) {
-    log_msg("init_framebuffer: opening /dev/fb0");
     fb_fd = open("/dev/fb0", O_RDWR);
-    if (fb_fd < 0) {
-        log_msg("init_framebuffer: FAILED to open /dev/fb0");
-        perror("Failed to open framebuffer");
-        exit(1);
-    }
-    log_msg("init_framebuffer: /dev/fb0 opened");
-
-    if (ioctl(fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
-        log_msg("init_framebuffer: FAILED to get screen info");
-        perror("Failed to get screen info");
-        close(fb_fd);
-        exit(1);
-    }
-
-    if (ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0) {
-        log_msg("init_framebuffer: FAILED to get fixed screen info");
-        perror("Failed to get fixed screen info");
-        close(fb_fd);
-        exit(1);
-    }
-
-    screen_width = vinfo.xres;
-    screen_height = vinfo.yres;
+    if (fb_fd < 0) { log_msg("FB open failed"); exit(1); }
+    ioctl(fb_fd, FBIOGET_VSCREENINFO, &vinfo);
+    ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo);
+    screen_width = vinfo.xres; screen_height = vinfo.yres;
     bytes_per_pixel = vinfo.bits_per_pixel / 8;
-
     if (bytes_per_pixel < 1) bytes_per_pixel = 1;
-
-    size_t mem_size = finfo.smem_len;
-    char buf[128];
-    snprintf(buf, sizeof(buf), "init_framebuffer: %dx%d %d bpp, line_length=%d, smem_len=%zu",
-             screen_width, screen_height, vinfo.bits_per_pixel, finfo.line_length, mem_size);
+    fb_mem = mmap(NULL, finfo.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
+    if (fb_mem == MAP_FAILED) { log_msg("mmap failed"); exit(1); }
+    char buf[128]; snprintf(buf, sizeof(buf), "FB: %dx%d %dbpp", screen_width, screen_height, vinfo.bits_per_pixel);
     log_msg(buf);
-
-    fb_mem = mmap(NULL, mem_size, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
-    if (fb_mem == MAP_FAILED) {
-        log_msg("init_framebuffer: FAILED to mmap");
-        perror("Failed to mmap framebuffer");
-        close(fb_fd);
-        exit(1);
-    }
-    log_msg("init_framebuffer: mmap OK");
 }
 
 void init_input(void) {
-    log_msg("init_input: scanning /dev/input");
-    DIR *dir = opendir("/dev/input");
-    if (!dir) {
-        log_msg("init_input: cannot open /dev/input");
-        fprintf(stderr, "Cannot open /dev/input\n");
-        return;
+    DIR *d = opendir("/dev/input"); if (!d) return;
+    struct dirent *e; int best = -1, best_s = -1;
+    while ((e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "event", 5)) continue;
+        char p[64]; snprintf(p, sizeof(p), "/dev/input/%s", e->d_name);
+        int fd = open(p, O_RDONLY | O_NONBLOCK); if (fd < 0) continue;
+        char name[256] = ""; ioctl(fd, EVIOCGNAME(sizeof(name)), name);
+        int s = 0;
+        if (strstr(name, "touch") || strstr(name, "Touch")) s += 10;
+        if (strstr(name, "multi") || strstr(name, "Multi")) s += 5;
+        if (s > best_s) { if (best >= 0) close(best); best = fd; best_s = s; }
+        else close(fd);
     }
-
-    struct dirent *entry;
-    int best_fd = -1;
-    int best_score = -1;
-
-    while ((entry = readdir(dir)) != NULL) {
-        if (strncmp(entry->d_name, "event", 5) != 0) continue;
-
-        char path[64];
-        snprintf(path, sizeof(path), "/dev/input/%s", entry->d_name);
-
-        int fd = open(path, O_RDONLY | O_NONBLOCK);
-        if (fd < 0) continue;
-
-        char name[256] = "unknown";
-        ioctl(fd, EVIOCGNAME(sizeof(name)), name);
-
-        int score = 0;
-        if (strstr(name, "touch") || strstr(name, "Touch") || strstr(name, "TOUCH")) score += 10;
-        if (strstr(name, "multi") || strstr(name, "Multi")) score += 5;
-        if (strstr(name, "mt") || strstr(name, "MT")) score += 3;
-        if (strstr(name, "Kindle")) score += 2;
-
-        printf("Input %s: '%s' (score=%d)\n", entry->d_name, name, score);
-        char buf[256];
-        snprintf(buf, sizeof(buf), "init_input: %s = '%s' score=%d", entry->d_name, name, score);
-        log_msg(buf);
-
-        if (score > best_score) {
-            if (best_fd >= 0) close(best_fd);
-            best_fd = fd;
-            best_score = score;
-            strcpy(path, path);
-        } else {
-            close(fd);
-        }
-    }
-    closedir(dir);
-
-    if (best_fd >= 0) {
-        input_fd = best_fd;
-        log_msg("init_input: using best device");
-    } else {
-        log_msg("init_input: NO input device found");
-        fprintf(stderr, "Warning: No input device found\n");
-    }
+    closedir(d);
+    input_fd = best;
 }
 
-void cleanup(void) {
-    if (fb_mem != NULL) {
-        munmap(fb_mem, finfo.smem_len);
-    }
-    if (fb_fd >= 0) {
-        close(fb_fd);
-    }
-    if (input_fd >= 0) {
-        close(input_fd);
-    }
-    release_lock();
-}
-
-void draw_rect(int x, int y, int w, int h, unsigned char color) {
-    for (int j = y; j < y + h && j < screen_height; j++) {
+void draw_rect(int x, int y, int w, int h, unsigned char c) {
+    for (int j = y; j < y + h && j < screen_height; j++)
         for (int i = x; i < x + w && i < screen_width; i++) {
-            int offset = (j * finfo.line_length) + (i * bytes_per_pixel);
-            if (offset >= 0 && offset < (int)finfo.smem_len) {
-                fb_mem[offset] = color;
-                if (bytes_per_pixel > 1) {
-                    fb_mem[offset + 1] = color;
-                }
-            }
+            int off = j * finfo.line_length + i * bytes_per_pixel;
+            if (off >= 0 && off < (int)finfo.smem_len) { fb_mem[off] = c; if (bytes_per_pixel > 1) fb_mem[off+1] = c; }
         }
-    }
 }
+
+static const unsigned char font5x7[][7] = {
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00},{0x04,0x04,0x04,0x04,0x04,0x00,0x04},
+    {0x08,0x14,0x22,0x22,0x3E,0x22,0x22},{0x1C,0x22,0x22,0x1C,0x22,0x22,0x1C},
+    {0x1C,0x22,0x20,0x20,0x20,0x22,0x1C},{0x18,0x24,0x22,0x22,0x22,0x24,0x18},
+    {0x3E,0x20,0x20,0x3C,0x20,0x20,0x3E},{0x3E,0x20,0x20,0x3C,0x20,0x20,0x20},
+    {0x1C,0x22,0x20,0x2E,0x22,0x22,0x1C},{0x22,0x22,0x22,0x3E,0x22,0x22,0x22},
+    {0x1C,0x08,0x08,0x08,0x08,0x08,0x1C},{0x02,0x02,0x02,0x02,0x02,0x22,0x1C},
+    {0x22,0x24,0x28,0x30,0x28,0x24,0x22},{0x20,0x20,0x20,0x20,0x20,0x20,0x3E},
+    {0x22,0x36,0x2A,0x2A,0x22,0x22,0x22},{0x22,0x32,0x2A,0x26,0x22,0x22,0x22},
+    {0x1C,0x22,0x22,0x22,0x22,0x22,0x1C},{0x1C,0x22,0x22,0x1C,0x20,0x20,0x20},
+    {0x1C,0x22,0x22,0x22,0x2A,0x24,0x1A},{0x1C,0x22,0x22,0x1C,0x28,0x24,0x22},
+    {0x1C,0x22,0x20,0x1C,0x02,0x22,0x1C},{0x3E,0x08,0x08,0x08,0x08,0x08,0x08},
+    {0x22,0x22,0x22,0x22,0x22,0x22,0x1C},{0x22,0x22,0x22,0x22,0x22,0x14,0x08},
+    {0x22,0x22,0x22,0x2A,0x2A,0x36,0x22},{0x22,0x22,0x14,0x08,0x14,0x22,0x22},
+    {0x22,0x22,0x14,0x08,0x08,0x08,0x08},{0x3E,0x02,0x04,0x08,0x10,0x20,0x3E},
+    {0x08,0x14,0x22,0x22,0x3E,0x22,0x22},{0x1C,0x22,0x22,0x1C,0x22,0x22,0x1C},
+    {0x1C,0x22,0x20,0x20,0x20,0x22,0x1C},{0x18,0x24,0x22,0x22,0x22,0x24,0x18},
+    {0x3E,0x20,0x20,0x3C,0x20,0x20,0x3E},{0x3E,0x20,0x20,0x3C,0x20,0x20,0x20},
+    {0x1C,0x22,0x20,0x2E,0x22,0x22,0x1C},{0x22,0x22,0x22,0x3E,0x22,0x22,0x22},
+    {0x1C,0x08,0x08,0x08,0x08,0x08,0x1C},{0x02,0x02,0x02,0x02,0x02,0x22,0x1C},
+    {0x22,0x24,0x28,0x30,0x28,0x24,0x22},{0x20,0x20,0x20,0x20,0x20,0x20,0x3E},
+    {0x22,0x36,0x2A,0x2A,0x22,0x22,0x22},{0x22,0x32,0x2A,0x26,0x22,0x22,0x22},
+    {0x1C,0x22,0x22,0x22,0x22,0x22,0x1C},{0x1C,0x22,0x22,0x1C,0x20,0x20,0x20},
+    {0x1C,0x22,0x22,0x22,0x2A,0x24,0x1A},{0x1C,0x22,0x22,0x1C,0x28,0x24,0x22},
+    {0x1C,0x22,0x20,0x1C,0x02,0x22,0x1C},{0x3E,0x08,0x08,0x08,0x08,0x08,0x08},
+    {0x22,0x22,0x22,0x22,0x22,0x22,0x1C},{0x22,0x22,0x22,0x22,0x22,0x14,0x08},
+    {0x22,0x22,0x22,0x2A,0x2A,0x36,0x22},{0x22,0x22,0x14,0x08,0x14,0x22,0x22},
+    {0x22,0x22,0x14,0x08,0x08,0x08,0x08},{0x3E,0x02,0x04,0x08,0x10,0x20,0x3E},
+    {0x1C,0x22,0x26,0x2A,0x32,0x22,0x1C},{0x08,0x18,0x08,0x08,0x08,0x08,0x1C},
+    {0x1C,0x22,0x02,0x0C,0x10,0x20,0x3E},{0x3E,0x02,0x04,0x0C,0x02,0x22,0x1C},
+    {0x04,0x0C,0x14,0x24,0x3E,0x04,0x04},{0x3E,0x20,0x3C,0x02,0x02,0x22,0x1C},
+    {0x0C,0x10,0x20,0x3C,0x22,0x22,0x1C},{0x3E,0x02,0x04,0x08,0x10,0x10,0x10},
+    {0x1C,0x22,0x22,0x1C,0x22,0x22,0x1C},{0x1C,0x22,0x22,0x1E,0x02,0x04,0x18},
+};
 
 void draw_char(int x, int y, char c, unsigned char color, int scale) {
-    int char_index = 0;
-
-    if (c == ' ') char_index = 0;
-    else if (c == '!') char_index = 1;
-    else if (c >= 'A' && c <= 'Z') char_index = 2 + (c - 'A');
-    else if (c >= 'a' && c <= 'z') char_index = 2 + (c - 'a');
-    else if (c >= '0' && c <= '9') char_index = 28 + (c - '0');
-    else if (c == '.') char_index = 1;
-    else if (c == ':') char_index = 1;
-    else if (c == '-') char_index = 1;
-    else if (c == '/') char_index = 1;
-    else if (c == '[') char_index = 11;
-    else if (c == ']') char_index = 11;
+    int idx = 0;
+    if (c >= 'A' && c <= 'Z') idx = 2 + (c - 'A');
+    else if (c >= 'a' && c <= 'z') idx = 2 + (c - 'a');
+    else if (c >= '0' && c <= '9') idx = 28 + (c - '0');
+    else if (c == '+') idx = 41; else if (c == '-') idx = 42;
+    else if (c == '*') idx = 43; else if (c == '/') idx = 44;
+    else if (c == '=') idx = 45; else if (c == '.') idx = 46;
+    else if (c == ',') idx = 47; else if (c == '(') idx = 48;
+    else if (c == ')') idx = 49; else if (c == '_') idx = 50;
+    else if (c == ':') idx = 51; else if (c == ';') idx = 52;
+    else if (c == '<') idx = 53; else if (c == '>') idx = 54;
+    else if (c == '?') idx = 55; else if (c == '!') idx = 56;
+    else if (c == '#') idx = 57; else if (c == '@') idx = 58;
+    else if (c == '%') idx = 59; else if (c == '^') idx = 60;
+    else if (c == '|') idx = 61; else if (c == '~') idx = 62;
+    else if (c == '[') idx = 63; else if (c == ']') idx = 64;
+    else if (c == '{') idx = 65; else if (c == '}') idx = 66;
     else return;
-
     for (int row = 0; row < 7; row++) {
-        unsigned char bits = font5x7[char_index][row];
-        for (int col = 0; col < 5; col++) {
-            if (bits & (0x20 >> col)) {
-                for (int sy = 0; sy < scale; sy++) {
+        unsigned char bits = font5x7[idx][row];
+        for (int col = 0; col < 5; col++)
+            if (bits & (0x20 >> col))
+                for (int sy = 0; sy < scale; sy++)
                     for (int sx = 0; sx < scale; sx++) {
-                        int px = x + (col * scale) + sx;
-                        int py = y + (row * scale) + sy;
+                        int px = x + col*scale + sx, py = y + row*scale + sy;
                         if (px < screen_width && py < screen_height) {
-                            int offset = (py * finfo.line_length) + (px * bytes_per_pixel);
-                            if (offset >= 0 && offset < (int)finfo.smem_len) {
-                                fb_mem[offset] = color;
-                                if (bytes_per_pixel > 1) {
-                                    fb_mem[offset + 1] = color;
-                                }
-                            }
+                            int off = py * finfo.line_length + px * bytes_per_pixel;
+                            if (off >= 0 && off < (int)finfo.smem_len) { fb_mem[off] = color; if (bytes_per_pixel>1) fb_mem[off+1]=color; }
                         }
                     }
-                }
-            }
-        }
     }
 }
 
-void draw_text(int x, int y, const char *text, unsigned char color, int scale) {
-    int curr_x = x;
-    while (*text) {
-        draw_char(curr_x, y, *text, color, scale);
-        curr_x += 6 * scale;
-        text++;
-    }
+void draw_text(int x, int y, const char *t, unsigned char c, int s) {
+    while (*t) { draw_char(x, y, *t, c, s); x += 6*s; t++; }
+}
+void draw_text_centered(int y, const char *t, unsigned char c, int s) {
+    int l = strlen(t); int w = l * 6 * s;
+    draw_text((screen_width - w) / 2, y, t, c, s);
+}
+void draw_text_right(int y, const char *t, unsigned char c, int s) {
+    int l = strlen(t); int w = l * 6 * s;
+    draw_text(screen_width - w - 10, y, t, c, s);
+}
+int text_width(const char *t, int s) { return strlen(t) * 6 * s; }
+
+int point_in_rect(int px, int py, int x, int y, int w, int h) {
+    return px >= x && px < x+w && py >= y && py < y+h;
 }
 
-void draw_text_centered(int y, const char *text, unsigned char color, int scale) {
-    int len = strlen(text);
-    int text_w = len * 5 * scale + (len - 1) * scale;
-    int x = (screen_width - text_w) / 2;
-    draw_text(x, y, text, color, scale);
+/* ========================= KEYBOARD ========================= */
+#define KB_ROWS 5
+#define KB_KEY_H 52
+#define KB_KEY_PAD 4
+
+typedef void (*keyboard_cb)(const char *text);
+static int keyboard_visible = 0;
+static int keyboard_shift = 0;
+static char keyboard_buffer[256] = "";
+static int keyboard_buf_len = 0;
+static keyboard_cb keyboard_callback = NULL;
+static int menu_visible = 0;
+
+static const char *kb_layout_lower[KB_ROWS] = {
+    "1234567890",
+    "qwertyuiop",
+    "asdfghjkl;",
+    "zxcvbnm,.",
+    " "
+};
+static const char *kb_layout_upper[KB_ROWS] = {
+    "!@#$%^&*()",
+    "QWERTYUIOP",
+    "ASDFGHJKL:",
+    "ZXCVBNM<>.",
+    " "
+};
+static const int kb_col_count[KB_ROWS] = {10, 10, 9, 9, 1};
+
+static int kb_start_y(void) { return screen_height - KEYBOARD_H; }
+
+void keyboard_show(keyboard_cb cb, const char *initial) {
+    keyboard_visible = 1; keyboard_shift = 0; keyboard_callback = cb;
+    keyboard_buf_len = 0; keyboard_buffer[0] = 0;
+    if (initial) { strncpy(keyboard_buffer, initial, sizeof(keyboard_buffer)-1); keyboard_buf_len = strlen(keyboard_buffer); }
 }
 
-int compare_versions(const char *v1, const char *v2) {
-    int major1, minor1, patch1;
-    int major2, minor2, patch2;
-    sscanf(v1, "%d.%d.%d", &major1, &minor1, &patch1);
-    sscanf(v2, "%d.%d.%d", &major2, &minor2, &patch2);
-    if (major1 != major2) return major1 - major2;
-    if (minor1 != minor2) return minor1 - minor2;
-    return patch1 - patch2;
-}
+void keyboard_hide(void) { keyboard_visible = 0; keyboard_callback = NULL; }
 
-int check_for_updates(void) {
-    printf("Checking for updates...\n");
+void keyboard_draw(void) {
+    if (!keyboard_visible) return;
+    int ky = kb_start_y();
+    draw_rect(0, ky, screen_width, KEYBOARD_H, COLOR_LIGHT);
+    draw_rect(0, ky, screen_width, 2, COLOR_DARK);
+    draw_text(10, ky+6, keyboard_buffer, COLOR_BLACK, 2);
+    int bx = screen_width - 100;
+    draw_rect(bx, ky+4, 90, 30, COLOR_DARK);
+    draw_text(bx+10, ky+10, "CLOSE", COLOR_WHITE, 2);
 
-    const char *cmd = "curl -s --connect-timeout 5 --max-time 10 " GITHUB_API_URL " 2>/dev/null";
-    FILE *fp = popen(cmd, "r");
-    if (fp == NULL) return -1;
-
-    char buffer[4096];
-    char tag_name[32] = "";
-    char body[1024] = "";
-    int in_body = 0;
-    int body_idx = 0;
-
-    while (fgets(buffer, sizeof(buffer), fp) != NULL) {
-        char *tag = strstr(buffer, "\"tag_name\":");
-        if (tag) {
-            char *start = strchr(tag + 11, '"');
-            if (start) {
-                start++;
-                char *end = strchr(start, '"');
-                if (end) {
-                    int len = end - start;
-                    if (len < 32) {
-                        strncpy(tag_name, start, len);
-                        tag_name[len] = '\0';
-                    }
-                }
-            }
-        }
-
-        char *body_start = strstr(buffer, "\"body\":");
-        if (body_start && !in_body) {
-            in_body = 1;
-            char *start = strchr(body_start + 7, '"');
-            if (start) {
-                start++;
-                int i = 0;
-                while (*start && *start != '"' && i < 200) {
-                    if (*start == '\\' && *(start+1) == 'n') {
-                        body[body_idx++] = '\n';
-                        start += 2;
-                    } else {
-                        body[body_idx++] = *start;
-                        start++;
-                    }
-                    i++;
-                }
-                body[body_idx] = '\0';
-                in_body = 0;
-            }
-        }
-    }
-
-    pclose(fp);
-
-    if (strlen(tag_name) > 0) {
-        char *ver = tag_name;
-        if (ver[0] == 'v') ver++;
-        strcpy(latest_version, ver);
-        strncpy(update_notes, body, sizeof(update_notes) - 1);
-
-        printf("Current: %s, Latest: %s\n", KINDLEJAP_VERSION, latest_version);
-
-        if (compare_versions(KINDLEJAP_VERSION, latest_version) < 0) {
-            return 1;
+    const char **layout = keyboard_shift ? kb_layout_upper : kb_layout_lower;
+    int total_w = screen_width - 20;
+    for (int r = 0; r < KB_ROWS; r++) {
+        int cols = kb_col_count[r];
+        int row_y = ky + 42 + r * (KB_KEY_H + KB_KEY_PAD);
+        if (r == KB_ROWS - 1) {
+            draw_rect(10, row_y, 80, KB_KEY_H, COLOR_DARK);
+            draw_text(20, row_y+18, "SHIFT", keyboard_shift ? COLOR_BLACK : COLOR_WHITE, 2);
+            int kw = total_w - 200;
+            int kx = 100;
+            draw_rect(kx, row_y, kw, KB_KEY_H, COLOR_WHITE);
+            draw_text_centered(row_y+18, "SPACE", COLOR_DARK, 2);
+            draw_rect(screen_width - 90, row_y, 80, KB_KEY_H, COLOR_DARK);
+            draw_text(screen_width - 80, row_y+18, "BS", COLOR_WHITE, 2);
         } else {
-            return 0;
+            int kw = (total_w - (cols-1)*KB_KEY_PAD) / cols;
+            for (int c = 0; c < cols; c++) {
+                int kx = 10 + c * (kw + KB_KEY_PAD);
+                char ch = layout[r][c];
+                draw_rect(kx, row_y, kw, KB_KEY_H, COLOR_WHITE);
+                char s[2] = {ch, 0};
+                int sw = text_width(s, 2);
+                draw_text(kx + (kw-sw)/2, row_y+18, s, COLOR_BLACK, 2);
+            }
         }
     }
-
-    return -1;
 }
 
-void show_splash(void) {
-    draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
-
-    draw_text_centered(screen_height / 2 - 40, "KINDLEJAP", COLOR_BLACK, 4);
-    draw_text_centered(screen_height / 2 + 20, "v" KINDLEJAP_VERSION, COLOR_GRAY, 2);
-
-    draw_text_centered(screen_height / 2 + 60, "LAUNCHER FOR KINDLE", COLOR_DARK, 1);
-}
-
-void show_init_status(const char *msg) {
-    static int y_pos = 0;
-    if (y_pos == 0) y_pos = screen_height / 2 + 100;
-
-    draw_text(50, y_pos, msg, COLOR_DARK, 1);
-    y_pos += 12;
-}
-
-void show_splash_init(void) {
-    draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
-
-    draw_text_centered(40, "KINDLEJAP", COLOR_BLACK, 4);
-    draw_text_centered(90, "v" KINDLEJAP_VERSION, COLOR_GRAY, 2);
-    draw_rect(screen_width / 2 - 150, 115, 300, 2, COLOR_DARK);
-
-    draw_text_centered(140, "INITIALIZING...", COLOR_DARK, 2);
-
-    draw_text(50, 190, "Testing framebuffer...", COLOR_DARK, 1);
-    draw_text(50, 210, "[OK] Framebuffer ready", COLOR_BLACK, 1);
-
-    draw_text(50, 240, "Testing input devices...", COLOR_DARK, 1);
-    refresh_screen();
-}
-
-void draw_taskbar(void) {
-    int taskbar_y = screen_height - TASKBAR_HEIGHT;
-    draw_rect(0, taskbar_y, screen_width, TASKBAR_HEIGHT, COLOR_LIGHT);
-    draw_rect(0, taskbar_y, screen_width, 2, COLOR_DARK);
-
-    int btn_x = 10;
-    int btn_y = taskbar_y + 10;
-    int btn_w = MENU_BUTTON_WIDTH;
-    int btn_h = TASKBAR_HEIGHT - 20;
-
-    draw_rect(btn_x, btn_y, btn_w, btn_h, COLOR_GRAY);
-    int text_w = 4 * 5;
-    int text_x = btn_x + (btn_w - text_w) / 2;
-    int text_y = btn_y + (btn_h - 7) / 2;
-    draw_text(text_x, text_y, "MENU", COLOR_BLACK, 1);
-
-    draw_text(screen_width - 200, taskbar_y + 20, "KindleJap", COLOR_BLACK, 2);
-}
-
-void draw_menu(void) {
-    if (!menu_expanded) return;
-
-    int menu_width = 250;
-    int menu_height = 200;
-    int menu_x = 10;
-    int menu_y = screen_height - TASKBAR_HEIGHT - menu_height - 10;
-
-    draw_rect(menu_x, menu_y, menu_width, menu_height, COLOR_WHITE);
-    draw_rect(menu_x, menu_y, menu_width, 2, COLOR_BLACK);
-    draw_rect(menu_x, menu_y + menu_height - 2, menu_width, 2, COLOR_BLACK);
-    draw_rect(menu_x, menu_y, 2, menu_height, COLOR_BLACK);
-    draw_rect(menu_x + menu_width - 2, menu_y, 2, menu_height, COLOR_BLACK);
-
-    int item_height = 40;
-    int item_y = menu_y + 10;
-
-    draw_rect(menu_x + 10, item_y, menu_width - 20, item_height, COLOR_LIGHT);
-    draw_text(menu_x + 20, item_y + 15, "Apps", COLOR_BLACK, 2);
-    menu_items[0].x = menu_x + 10;
-    menu_items[0].y = item_y;
-    menu_items[0].w = menu_width - 20;
-    menu_items[0].h = item_height;
-    menu_items[0].active = 1;
-    item_y += item_height + 5;
-
-    draw_rect(menu_x + 10, item_y, menu_width - 20, item_height, COLOR_LIGHT);
-    draw_text(menu_x + 20, item_y + 15, "Settings", COLOR_BLACK, 2);
-    menu_items[1].x = menu_x + 10;
-    menu_items[1].y = item_y;
-    menu_items[1].w = menu_width - 20;
-    menu_items[1].h = item_height;
-    menu_items[1].active = 1;
-    item_y += item_height + 5;
-
-    draw_rect(menu_x + 10, item_y, menu_width - 20, item_height, COLOR_LIGHT);
-    draw_text(menu_x + 20, item_y + 15, "Exit", COLOR_BLACK, 2);
-    menu_items[2].x = menu_x + 10;
-    menu_items[2].y = item_y;
-    menu_items[2].w = menu_width - 20;
-    menu_items[2].h = item_height;
-    menu_items[2].active = 1;
-}
-
-void draw_update_dialog(void) {
-    if (!show_update_dialog) return;
-
-    int dlg_width = 400;
-    int dlg_height = 250;
-    int dlg_x = (screen_width - dlg_width) / 2;
-    int dlg_y = (screen_height - dlg_height) / 2;
-
-    draw_rect(0, 0, screen_width, screen_height, COLOR_DARK);
-    draw_rect(dlg_x, dlg_y, dlg_width, dlg_height, COLOR_WHITE);
-    draw_rect(dlg_x, dlg_y, dlg_width, 2, COLOR_BLACK);
-    draw_rect(dlg_x, dlg_y + dlg_height - 2, dlg_width, 2, COLOR_BLACK);
-    draw_rect(dlg_x, dlg_y, 2, dlg_height, COLOR_BLACK);
-    draw_rect(dlg_x + dlg_width - 2, dlg_y, 2, dlg_height, COLOR_BLACK);
-
-    draw_text(dlg_x + 20, dlg_y + 20, "UPDATE AVAILABLE", COLOR_BLACK, 2);
-
-    char version_text[64];
-    snprintf(version_text, sizeof(version_text), "Current: %s", KINDLEJAP_VERSION);
-    draw_text(dlg_x + 20, dlg_y + 50, version_text, COLOR_BLACK, 1);
-
-    snprintf(version_text, sizeof(version_text), "Latest:  %s", latest_version);
-    draw_text(dlg_x + 20, dlg_y + 65, version_text, COLOR_BLACK, 1);
-
-    draw_text(dlg_x + 20, dlg_y + 90, "New version available!", COLOR_BLACK, 1);
-
-    int btn_w = 120;
-    int btn_h = 40;
-    int btn_y = dlg_y + dlg_height - 60;
-
-    draw_rect(dlg_x + 60, btn_y, btn_w, btn_h, COLOR_GRAY);
-    draw_text(dlg_x + 80, btn_y + 15, "UPDATE", COLOR_BLACK, 2);
-
-    draw_rect(dlg_x + 220, btn_y, btn_w, btn_h, COLOR_GRAY);
-    draw_text(dlg_x + 250, btn_y + 15, "CANCEL", COLOR_BLACK, 2);
-
-    menu_items[3].x = dlg_x + 60;
-    menu_items[3].y = btn_y;
-    menu_items[3].w = btn_w;
-    menu_items[3].h = btn_h;
-
-    menu_items[4].x = dlg_x + 220;
-    menu_items[4].y = btn_y;
-    menu_items[4].w = btn_w;
-    menu_items[4].h = btn_h;
-}
-
-void draw_update_progress(void) {
-    if (!update_downloading) return;
-
-    int dlg_width = 400;
-    int dlg_height = 150;
-    int dlg_x = (screen_width - dlg_width) / 2;
-    int dlg_y = (screen_height - dlg_height) / 2;
-
-    draw_rect(0, 0, screen_width, screen_height, COLOR_DARK);
-    draw_rect(dlg_x, dlg_y, dlg_width, dlg_height, COLOR_WHITE);
-    draw_rect(dlg_x, dlg_y, dlg_width, 2, COLOR_BLACK);
-    draw_rect(dlg_x, dlg_y + dlg_height - 2, dlg_width, 2, COLOR_BLACK);
-    draw_rect(dlg_x, dlg_y, 2, dlg_height, COLOR_BLACK);
-    draw_rect(dlg_x + dlg_width - 2, dlg_y, 2, dlg_height, COLOR_BLACK);
-
-    draw_text(dlg_x + 20, dlg_y + 20, "UPDATING...", COLOR_BLACK, 2);
-
-    int bar_x = dlg_x + 20;
-    int bar_y = dlg_y + 70;
-    int bar_w = dlg_width - 40;
-    int bar_h = 20;
-
-    draw_rect(bar_x, bar_y, bar_w, bar_h, COLOR_LIGHT);
-
-    if (update_progress > 0) {
-        int fill_w = (bar_w * update_progress) / 100;
-        draw_rect(bar_x, bar_y, fill_w, bar_h, COLOR_DARK);
-    }
-
-    char progress_text[32];
-    snprintf(progress_text, sizeof(progress_text), "%d%%", update_progress);
-    draw_text(dlg_x + 180, bar_y + 25, progress_text, COLOR_BLACK, 1);
-}
-
-void action_exit(void) {
-    printf("Exiting KindleJap...\n");
-    running = 0;
-}
-
-void action_apps(void) {
-    printf("Opening Apps menu...\n");
-}
-
-void action_settings(void) {
-    printf("Opening Settings...\n");
-}
-
-void *check_updates_thread(void *arg) {
-    (void)arg;
-    log_msg("update_thread: checking for updates");
-    int result = check_for_updates();
-    char buf[64];
-    snprintf(buf, sizeof(buf), "update_thread: result=%d", result);
-    log_msg(buf);
-    if (result == 1) {
-        show_update_dialog = 1;
-        update_available = 1;
-        redraw_screen();
-    }
-    log_msg("update_thread: done");
-    return NULL;
-}
-
-void action_check_update(void) {
-    printf("Checking for updates...\n");
-    menu_expanded = 0;
-
-    draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
-    draw_taskbar();
-    draw_text(100, screen_height / 2 - 20, "Checking for updates...", COLOR_BLACK, 2);
-    redraw_screen();
-
-    int result = check_for_updates();
-
-    if (result == 1) {
-        show_update_dialog = 1;
-        update_available = 1;
-    } else if (result == 0) {
-        draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
-        draw_taskbar();
-        draw_text(100, screen_height / 2 - 20, "Already up to date!", COLOR_BLACK, 2);
-        redraw_screen();
-        sleep(2);
-    } else {
-        draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
-        draw_taskbar();
-        draw_text(100, screen_height / 2 - 20, "Check failed!", COLOR_BLACK, 2);
-        draw_text(100, screen_height / 2 + 10, "No internet connection?", COLOR_BLACK, 1);
-        redraw_screen();
-        sleep(2);
-    }
-
-    update_available = (result == 1) ? 1 : 0;
-    redraw_screen();
-}
-
-void *download_and_update_thread(void *arg) {
-    (void)arg;
-    printf("Starting update...\n");
-    update_downloading = 1;
-    update_progress = 0;
-    redraw_screen();
-
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "%s %s update", UPDATE_SCRIPT, KINDLEJAP_VERSION);
-    int ret = system(cmd);
-
-    update_downloading = 0;
-
-    if (ret == 0) {
-        printf("Update completed!\n");
-        update_progress = 100;
-        redraw_screen();
-        sleep(2);
-        execl(UPDATE_SCRIPT, UPDATE_SCRIPT, "restart", NULL);
-    } else {
-        printf("Update failed!\n");
-        update_progress = -1;
-        redraw_screen();
-        sleep(2);
-    }
-    return NULL;
-}
-
-void action_update_now(void) {
-    printf("Starting update...\n");
-    menu_expanded = 0;
-    show_update_dialog = 0;
-    update_downloading = 1;
-    update_progress = 0;
-    redraw_screen();
-
-    pthread_t update_thread;
-    pthread_create(&update_thread, NULL, download_and_update_thread, NULL);
-    pthread_detach(update_thread);
-}
-
-void action_update_yes(void) {
-    action_update_now();
-}
-
-void action_update_no(void) {
-    show_update_dialog = 0;
-    update_available = 0;
-    redraw_screen();
-}
-
-void redraw_screen(void) {
-    draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
-    draw_taskbar();
-    draw_menu();
-    draw_update_dialog();
-    draw_update_progress();
-    refresh_screen_partial();
-}
-
-void handle_touch(int x, int y, int pressed) {
-    static int touch_start_x = 0;
-    static int touch_start_y = 0;
-    static int swipe_detected = 0;
-
-    if (pressed) {
-        touch_start_x = x;
-        touch_start_y = y;
-        swipe_detected = 0;
-
-        if (y > screen_height - TASKBAR_HEIGHT - 50) {
-            swipe_detected = 1;
-        }
-    } else {
-        int dx = x - touch_start_x;
-        int dy = y - touch_start_y;
-
-        if (swipe_detected && dy > 50 && abs(dx) < 30) {
-            menu_expanded = !menu_expanded;
-            redraw_screen();
-            return;
-        }
-
-        if (x >= 10 && x <= 10 + MENU_BUTTON_WIDTH &&
-            y >= screen_height - TASKBAR_HEIGHT + 10 &&
-            y <= screen_height - 10) {
-            menu_expanded = !menu_expanded;
-            redraw_screen();
-            return;
-        }
-
-        if (menu_expanded) {
-            for (int i = 0; i < 3; i++) {
-                if (menu_items[i].active &&
-                    x >= menu_items[i].x && x <= menu_items[i].x + menu_items[i].w &&
-                    y >= menu_items[i].y && y <= menu_items[i].y + menu_items[i].h) {
-                    switch (i) {
-                        case 0: action_apps(); break;
-                        case 1: action_settings(); break;
-                        case 2: action_exit(); break;
+void keyboard_handle_touch(int x, int y) {
+    if (!keyboard_visible) return;
+    int ky = kb_start_y();
+    if (y < ky) return;
+
+    int bx = screen_width - 100;
+    if (point_in_rect(x, y, bx, ky+4, 90, 30)) { keyboard_submit(); return; }
+
+    int row_y_start = ky + 42;
+    int total_w = screen_width - 20;
+    for (int r = 0; r < KB_ROWS; r++) {
+        int row_y = row_y_start + r * (KB_KEY_H + KB_KEY_PAD);
+        if (r == KB_ROWS - 1) {
+            if (point_in_rect(x, y, 10, row_y, 80, KB_KEY_H)) {
+                keyboard_shift = !keyboard_shift; return;
+            }
+            int kw = total_w - 200;
+            int kx = 100;
+            if (point_in_rect(x, y, kx, row_y, kw, KB_KEY_H)) {
+                if (keyboard_buf_len < (int)sizeof(keyboard_buffer)-1) {
+                    keyboard_buffer[keyboard_buf_len++] = ' ';
+                    keyboard_buffer[keyboard_buf_len] = 0;
+                }
+                return;
+            }
+            if (point_in_rect(x, y, screen_width-90, row_y, 80, KB_KEY_H)) {
+                if (keyboard_buf_len > 0) keyboard_buffer[--keyboard_buf_len] = 0;
+                return;
+            }
+        } else {
+            int cols = kb_col_count[r];
+            int kw = (total_w - (cols-1)*KB_KEY_PAD) / cols;
+            const char **layout = keyboard_shift ? kb_layout_upper : kb_layout_lower;
+            for (int c = 0; c < cols; c++) {
+                int kx = 10 + c * (kw + KB_KEY_PAD);
+                if (point_in_rect(x, y, kx, row_y, kw, KB_KEY_H)) {
+                    char ch = layout[r][c];
+                    if (ch && keyboard_buf_len < (int)sizeof(keyboard_buffer)-1) {
+                        keyboard_buffer[keyboard_buf_len++] = ch;
+                        keyboard_buffer[keyboard_buf_len] = 0;
                     }
-                    menu_expanded = 0;
-                    redraw_screen();
                     return;
                 }
             }
         }
+    }
+}
 
-        if (show_update_dialog) {
-            if (x >= menu_items[3].x && x <= menu_items[3].x + menu_items[3].w &&
-                y >= menu_items[3].y && y <= menu_items[3].y + menu_items[3].h) {
-                action_update_yes();
-                redraw_screen();
-                return;
-            }
+void keyboard_submit(void) {
+    if (keyboard_callback) keyboard_callback(keyboard_buffer);
+    keyboard_hide();
+}
 
-            if (x >= menu_items[4].x && x <= menu_items[4].x + menu_items[4].w &&
-                y >= menu_items[4].y && y <= menu_items[4].y + menu_items[4].h) {
-                action_update_no();
-                redraw_screen();
-                return;
+/* ========================= APP FRAMEWORK ========================= */
+#define MAX_OPEN_APPS 16
+#define MAX_REGISTERED_APPS 32
+
+typedef struct App {
+    char name[32];
+    char icon[8];
+    void (*init)(void);
+    void (*draw)(int x, int y, int w, int h);
+    void (*on_touch)(int x, int y, int pressed);
+    void (*cleanup)(void);
+    void *data;
+} App;
+
+static App registered[MAX_REGISTERED_APPS];
+static int registered_count = 0;
+static App *open_apps[MAX_OPEN_APPS];
+static int open_count = 0;
+static int active_app_idx = -1;
+
+void app_register(App *app) {
+    if (registered_count < MAX_REGISTERED_APPS) registered[registered_count++] = *app;
+}
+
+void app_open(App *app) {
+    for (int i = 0; i < open_count; i++) if (open_apps[i] == app) { active_app_idx = i; return; }
+    if (open_count >= MAX_OPEN_APPS) return;
+    open_apps[open_count] = app;
+    active_app_idx = open_count;
+    open_count++;
+    if (app->init) app->init();
+}
+
+void app_close(int idx) {
+    if (idx < 0 || idx >= open_count) return;
+    if (open_apps[idx]->cleanup) open_apps[idx]->cleanup();
+    for (int i = idx; i < open_count - 1; i++) open_apps[i] = open_apps[i+1];
+    open_count--;
+    if (active_app_idx >= open_count) active_app_idx = open_count - 1;
+}
+
+static int close_btn_mode = 0;
+static int close_btn_target = -1;
+static int long_press_x = -1, long_press_y = -1;
+static unsigned long long press_start_time = 0;
+
+void taskbar_draw(void) {
+    int ty = screen_height - TASKBAR_H;
+    draw_rect(0, ty, screen_width, TASKBAR_H, COLOR_LIGHT);
+    draw_rect(0, ty, screen_width, 2, COLOR_DARK);
+    draw_rect(0, ty+2, 70, TASKBAR_H-2, COLOR_DARK);
+    draw_text(12, ty+18, "MENU", COLOR_WHITE, 2);
+
+    int tx = 80;
+    for (int i = 0; i < open_count; i++) {
+        int tw = text_width(open_apps[i]->name, 2) + 20;
+        if (i == active_app_idx) draw_rect(tx, ty+2, tw, TASKBAR_H-2, COLOR_SELECT);
+        draw_rect(tx, ty+2, tw, TASKBAR_H-2, COLOR_WHITE);
+        if (i == active_app_idx) draw_rect(tx, ty+2, tw, TASKBAR_H-2, COLOR_SELECT);
+        draw_rect(tx, ty+2, 3, TASKBAR_H-2, COLOR_DARK);
+        draw_text(tx+10, ty+18, open_apps[i]->name, COLOR_BLACK, 2);
+        if (close_btn_mode && close_btn_target == i) {
+            draw_rect(tx+tw-4, ty+8, 24, TASKBAR_H-16, COLOR_DARK);
+            draw_text(tx+tw-1, ty+16, "X", COLOR_WHITE, 2);
+        }
+        tx += tw + 4;
+    }
+}
+
+int taskbar_handle_touch(int x, int y, int pressed) {
+    int ty = screen_height - TASKBAR_H;
+    if (y < ty) return 0;
+    if (x < 70) {
+        if (!pressed) {
+            menu_visible = !menu_visible;
+            return 1;
+        }
+        return 1;
+    }
+    int tx = 80;
+    for (int i = 0; i < open_count; i++) {
+        int tw = text_width(open_apps[i]->name, 2) + 20;
+        if (point_in_rect(x, y, tx, ty+2, tw, TASKBAR_H-2)) {
+            if (pressed) {
+                long_press_x = x; long_press_y = y;
+                struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+                press_start_time = ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
+                close_btn_mode = 0; close_btn_target = -1;
+            } else {
+                if (close_btn_mode && close_btn_target == i) { app_close(i); close_btn_mode = 0; close_btn_target = -1; return 1; }
+                struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+                unsigned long long now = ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
+                if (now - press_start_time > 500) { close_btn_mode = 1; close_btn_target = i; return 1; }
+                active_app_idx = i; return 1;
             }
+        }
+        tx += tw + 4;
+    }
+    return 0;
+}
+
+/* ========================= MENU ========================= */
+
+void menu_draw(void) {
+    if (!menu_visible) return;
+    draw_rect(0, 0, screen_width, screen_height - TASKBAR_H, 0x20);
+    int y = 100;
+    draw_text_centered(60, "KINDLEJAP " KINDLEJAP_VERSION, COLOR_WHITE, 3);
+    const char *items[] = {"Calculator", "File Explorer", "Network", "Browser", "KUAL Apps", "Settings", "Exit"};
+    int count = 7;
+    for (int i = 0; i < count; i++) {
+        int iw = text_width(items[i], 3) + 40;
+        int ix = (screen_width - iw) / 2;
+        draw_rect(ix, y, iw, 50, COLOR_DARK);
+        draw_text(ix+20, y+14, items[i], COLOR_WHITE, 3);
+        y += 60;
+    }
+}
+
+int menu_handle_touch(int x, int y, int pressed) {
+    if (!menu_visible || pressed) return 0;
+    int items_y = 100;
+    const char *names[] = {"Calculator", "File Explorer", "Network", "Browser", "KUAL Apps", "Settings", "Exit"};
+    for (int i = 0; i < 7; i++) {
+        int iw = text_width(names[i], 3) + 40;
+        int ix = (screen_width - iw) / 2;
+        if (point_in_rect(x, y, ix, items_y, iw, 50)) {
+            menu_visible = 0;
+            if (i < 4 && registered_count > i) { app_open(&registered[i]); return 1; }
+            if (i == 4) { system("killall kindlejap-bin 2>/dev/null"); return 1; }
+            if (i == 6) { running = 0; return 1; }
+            return 1;
+        }
+        items_y += 60;
+    }
+    return 1;
+}
+
+/* ========================= CALCULATOR APP ========================= */
+static char calc_display[64] = "0";
+static double calc_num1 = 0, calc_num2 = 0;
+static int calc_op = 0;
+static int calc_new_num = 1;
+
+static void calc_init(void) { strcpy(calc_display, "0"); calc_num1 = 0; calc_num2 = 0; calc_op = 0; calc_new_num = 1; }
+
+static void calc_draw(int x, int y, int w, int h) {
+    draw_rect(x, y, w, h, COLOR_WHITE);
+    draw_rect(x, y, w, 60, COLOR_DARK);
+    draw_text_right(y+20, calc_display, COLOR_WHITE, 3);
+    const char *btns[] = {"C","(",")","/","7","8","9","*","4","5","6","-","1","2","3","+","0",".","=",""};
+    int cols = 4, rows = 5;
+    int bw = (w - 20) / cols, bh = (h - 80) / rows;
+    for (int r = 0; r < rows; r++)
+        for (int c = 0; c < cols; c++) {
+            int idx = r * cols + c;
+            if (idx >= 20) continue;
+            int bx = x + 10 + c*bw, by = y + 70 + r*bh;
+            draw_rect(bx+2, by+2, bw-4, bh-4, COLOR_LIGHT);
+            int tw2 = text_width(btns[idx], 2);
+            draw_text(bx + (bw-tw2)/2, by + bh/2 - 7, btns[idx], COLOR_BLACK, 2);
+        }
+}
+
+static void calc_on_touch(int tx, int ty, int pressed) {
+    if (pressed) return;
+    int bw = (screen_width - 20) / 4, bh = (screen_height - TASKBAR_H - 80) / 5;
+    for (int r = 0; r < 5; r++)
+        for (int c = 0; c < 4; c++) {
+            int idx = r * 4 + c;
+            if (idx >= 20) continue;
+            int bx = 10 + c*bw, by = 70 + r*bh;
+            if (!point_in_rect(tx, ty, bx, by, bw, bh)) continue;
+            const char *labels[] = {"C","(",")","/","7","8","9","*","4","5","6","-","1","2","3","+","0",".","=",""};
+            char ch = labels[idx][0];
+            if (ch == 'C') { strcpy(calc_display, "0"); calc_num1 = 0; calc_op = 0; calc_new_num = 1; }
+            else if (ch >= '0' && ch <= '9') {
+                if (calc_new_num) { snprintf(calc_display, sizeof(calc_display), "%c", ch); calc_new_num = 0; }
+                else { int l = strlen(calc_display); calc_display[l] = ch; calc_display[l+1] = 0; }
+            }
+            else if (ch == '.') { int l = strlen(calc_display); calc_display[l] = '.'; calc_display[l+1] = 0; calc_new_num = 0; }
+            else if (ch == '+' || ch == '-' || ch == '*' || ch == '/') {
+                calc_num1 = atof(calc_display); calc_op = ch; calc_new_num = 1;
+            }
+            else if (ch == '=') {
+                calc_num2 = atof(calc_display); double res = 0;
+                if (calc_op == '+') res = calc_num1 + calc_num2;
+                else if (calc_op == '-') res = calc_num1 - calc_num2;
+                else if (calc_op == '*') res = calc_num1 * calc_num2;
+                else if (calc_op == '/') res = calc_num2 != 0 ? calc_num1 / calc_num2 : 0;
+                if (res == (int)res) snprintf(calc_display, sizeof(calc_display), "%d", (int)res);
+                else snprintf(calc_display, sizeof(calc_display), "%.6g", res);
+                calc_new_num = 1;
+            }
+            else if (ch == '(' || ch == ')') {}
+            return;
+        }
+}
+
+static App app_calc = {"Calculator", "CALC", calc_init, calc_draw, calc_on_touch, NULL, NULL};
+
+/* ========================= FILE EXPLORER APP ========================= */
+#define FE_MAX_ENTRIES 128
+#define FE_NAME_LEN 64
+
+typedef struct { char name[FE_NAME_LEN]; int is_dir; off_t size; } FEEntry;
+static FEEntry fe_entries[FE_MAX_ENTRIES];
+static int fe_count = 0;
+static int fe_scroll = 0;
+static char fe_path[256] = "/mnt/us";
+
+static void fe_load_dir(const char *path) {
+    DIR *d = opendir(path); if (!d) return;
+    fe_count = 0; fe_scroll = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && fe_count < FE_MAX_ENTRIES) {
+        if (e->d_name[0] == '.' && (e->d_name[1] == 0 || (e->d_name[1]=='.' && e->d_name[2]==0))) continue;
+        strncpy(fe_entries[fe_count].name, e->d_name, FE_NAME_LEN-1);
+        fe_entries[fe_count].name[FE_NAME_LEN-1] = 0;
+        char full[512]; snprintf(full, sizeof(full), "%s/%s", path, e->d_name);
+        struct stat st;
+        fe_entries[fe_count].is_dir = (stat(full, &st) == 0 && S_ISDIR(st.st_mode));
+        fe_entries[fe_count].size = st.st_size;
+        fe_count++;
+    }
+    closedir(d);
+}
+
+static void fe_init(void) { strcpy(fe_path, "/mnt/us"); fe_load_dir(fe_path); }
+
+static void fe_draw(int x, int y, int w, int h) {
+    draw_rect(x, y, w, h, COLOR_WHITE);
+    draw_rect(x, y, w, 50, COLOR_DARK);
+    draw_text(x+10, y+16, fe_path, COLOR_WHITE, 2);
+    int row_h = 40;
+    int max_rows = (h - 60) / row_h;
+    for (int i = 0; i < max_rows && i + fe_scroll < fe_count; i++) {
+        int idx = i + fe_scroll;
+        int ry = y + 56 + i * row_h;
+        draw_rect(x+5, ry, w-10, row_h-2, (idx % 2) ? COLOR_LIGHT : COLOR_WHITE);
+        if (fe_entries[idx].is_dir) draw_text(x+15, ry+12, "[DIR]", COLOR_DARK, 2);
+        draw_text(x+60, ry+12, fe_entries[idx].name, COLOR_BLACK, 2);
+        if (!fe_entries[idx].is_dir) {
+            char sz[32]; snprintf(sz, sizeof(sz), "%ld", (long)fe_entries[idx].size);
+            draw_text_right(ry+12, sz, COLOR_GRAY, 1);
         }
     }
 }
 
-void process_input(void) {
-    struct input_event ev;
-    int bytes;
-
-    while ((bytes = read(input_fd, &ev, sizeof(ev))) > 0) {
-        if (bytes != sizeof(ev)) continue;
-
-        if (ev.type == EV_ABS) {
-            if (ev.code == ABS_MT_POSITION_X) {
-                touch_last_x = ev.value;
-            } else if (ev.code == ABS_MT_POSITION_Y) {
-                touch_last_y = ev.value;
-            } else if (ev.code == ABS_X) {
-                touch_last_x = ev.value;
-            } else if (ev.code == ABS_Y) {
-                touch_last_y = ev.value;
-            }
-        } else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
-            handle_touch(touch_last_x, touch_last_y, ev.value);
+static void fe_on_touch(int tx, int ty, int pressed) {
+    if (pressed) return;
+    int row_h = 40;
+    int start_y = 56;
+    if (ty < start_y) return;
+    int row = (ty - start_y) / row_h + fe_scroll;
+    if (row < 0 || row >= fe_count) return;
+    if (fe_entries[row].is_dir) {
+        if (strcmp(fe_entries[row].name, "..") == 0) {
+            char *slash = strrchr(fe_path, '/');
+            if (slash && slash > fe_path) { *slash = 0; if (fe_path[0] == 0) strcpy(fe_path, "/"); }
+        } else {
+            char newp[256]; snprintf(newp, sizeof(newp), "%s/%s", fe_path, fe_entries[row].name);
+            strncpy(fe_path, newp, sizeof(fe_path)-1);
         }
+        fe_load_dir(fe_path);
     }
 }
 
+static void fe_cleanup(void) { fe_count = 0; }
+
+static App app_fe = {"Files", "FILES", fe_init, fe_draw, fe_on_touch, fe_cleanup, NULL};
+
+/* ========================= NETWORK APP ========================= */
+static char net_status[128] = "Scanning...";
+static char net_ssid[64] = "";
+static int net_connected = 0;
+static char net_lines[20][128];
+static int net_line_count = 0;
+static int net_scroll = 0;
+
+static void net_scan(void) {
+    net_line_count = 0;
+    system("iwlist wlan0 scan 2>/dev/null | grep ESSID > /tmp/kj_wifi.txt");
+    FILE *f = fopen("/tmp/kj_wifi.txt", "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f) && net_line_count < 20) {
+            char *q = strchr(line, '"'); if (!q) continue;
+            char *end = strchr(q+1, '"'); if (!end) continue;
+            *end = 0;
+            strncpy(net_lines[net_line_count], q+1, 127);
+            net_line_count++;
+        }
+        fclose(f);
+    }
+    if (net_line_count == 0) { strcpy(net_lines[0], "No networks found"); net_line_count = 1; }
+}
+
+static void net_init(void) {
+    strcpy(net_status, "Scanning..."); net_connected = 0; net_scroll = 0;
+    net_scan();
+    char cmd[256]; snprintf(cmd, sizeof(cmd), "wpa_cli -i wlan0 status 2>/dev/null | grep ssid > /tmp/kj_conn.txt");
+    system(cmd);
+    FILE *f = fopen("/tmp/kj_conn.txt", "r");
+    if (f) { char line[128]; if (fgets(line, sizeof(line), f)) { char *eq = strchr(line, '=');
+        if (eq) { strncpy(net_ssid, eq+1, 63); char *nl = strchr(net_ssid, '\n'); if (nl) *nl = 0;
+            net_connected = 1; snprintf(net_status, sizeof(net_status), "Connected: %s", net_ssid); }}
+        fclose(f); }
+}
+
+static void net_draw(int x, int y, int w, int h) {
+    draw_rect(x, y, w, h, COLOR_WHITE);
+    draw_rect(x, y, w, 50, COLOR_DARK);
+    draw_text(x+10, y+16, "NETWORK", COLOR_WHITE, 3);
+    draw_rect(x, y+54, w, 36, COLOR_LIGHT);
+    draw_text(x+10, y+62, net_status, COLOR_BLACK, 2);
+    int ry = y + 100;
+    draw_rect(x+10, ry, w-20, 40, COLOR_DARK);
+    draw_text(x+20, ry+12, "SCAN", COLOR_WHITE, 2);
+    draw_rect(x+w/2+10, ry, w/2-20, 40, net_connected ? COLOR_DARK : COLOR_GRAY);
+    draw_text(x+w/2+20, ry+12, "DISCONNECT", COLOR_WHITE, 2);
+    ry += 50;
+    int max_rows = (h - (ry-y) - 10) / 36;
+    for (int i = 0; i < max_rows && i + net_scroll < net_line_count; i++) {
+        int idx = i + net_scroll;
+        int rry = ry + i * 36;
+        draw_rect(x+5, rry, w-10, 34, (strcmp(net_lines[idx], net_ssid) == 0) ? COLOR_SELECT : COLOR_LIGHT);
+        draw_text(x+15, rry+10, net_lines[idx], COLOR_BLACK, 2);
+    }
+}
+
+static void net_on_touch(int tx, int ty, int pressed) {
+    if (pressed) return;
+    int ry = 100;
+    if (point_in_rect(tx, ty, 10, ry, screen_width/2-20, 40)) { net_init(); return; }
+    if (point_in_rect(tx, ty, screen_width/2+10, ry, screen_width/2-20, 40)) {
+        if (net_connected) { system("wpa_cli -i wlan0 disconnect 2>/dev/null"); net_init(); }
+        return;
+    }
+    int list_y = ry + 50;
+    int row = (ty - list_y) / 36 + net_scroll;
+    if (row >= 0 && row < net_line_count && ty >= list_y) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "wpa_cli -i wlan1 connect \"%s\" 2>/dev/null || wpa_cli -i wlan0 connect \"%s\" 2>/dev/null", net_lines[row], net_lines[row]);
+        system(cmd); net_init();
+    }
+}
+
+static void net_cleanup(void) { net_line_count = 0; }
+
+static App app_net = {"Network", "NET", net_init, net_draw, net_on_touch, net_cleanup, NULL};
+
+/* ========================= BROWSER APP ========================= */
+static char brw_url[256] = "";
+static char brw_content[4096] = "";
+static int brw_content_len = 0;
+static int brw_scroll = 0;
+static int brw_input_mode = 0;
+
+static void brw_init(void) { brw_url[0] = 0; brw_content[0] = 0; brw_content_len = 0; brw_scroll = 0; brw_input_mode = 0; }
+
+static void brw_got_url(const char *url) {
+    brw_input_mode = 0; keyboard_hide();
+    strncpy(brw_url, url, sizeof(brw_url)-1);
+    snprintf(brw_content, sizeof(brw_content), "Loading %s...", brw_url);
+    brw_content_len = strlen(brw_content);
+    char cmd[1024]; snprintf(cmd, sizeof(cmd), "curl -sL --connect-timeout 5 --max-time 10 '%s' 2>/dev/null | head -c 4000 > /tmp/kj_page.txt", brw_url);
+    system(cmd);
+    FILE *f = fopen("/tmp/kj_page.txt", "r");
+    if (f) { brw_content_len = fread(brw_content, 1, sizeof(brw_content)-1, f); brw_content[brw_content_len] = 0; fclose(f); }
+    else { snprintf(brw_content, sizeof(brw_content), "Failed to load: %s", brw_url); brw_content_len = strlen(brw_content); }
+}
+
+static void brw_draw(int x, int y, int w, int h) {
+    draw_rect(x, y, w, h, COLOR_WHITE);
+    draw_rect(x, y, w, 50, COLOR_DARK);
+    draw_text(x+10, y+16, "BROWSER", COLOR_WHITE, 3);
+    draw_rect(x, y+54, w, 36, COLOR_LIGHT);
+    draw_text(x+10, y+64, brw_url[0] ? brw_url : "Tap GO to enter URL", COLOR_BLACK, 1);
+    draw_rect(x+w-80, y+54, 80, 36, COLOR_DARK);
+    draw_text(x+w-70, y+64, "GO", COLOR_WHITE, 2);
+    int text_y = y + 100;
+    int max_lines = (h - 110) / 14;
+    int line = 0, ly = 0;
+    for (int i = 0; i < brw_content_len && line - brw_scroll < max_lines; i++) {
+        if (brw_content[i] == '\n') { line++; ly = 0; if (line < brw_scroll) continue; }
+        if (line - brw_scroll >= 0) {
+            int py = text_y + (line - brw_scroll) * 14;
+            char ch[2] = {brw_content[i], 0};
+            draw_text(x + 10 + ly, py, ch, COLOR_BLACK, 1);
+        }
+        ly += 6;
+        if (ly > w - 20) { line++; ly = 0; if (line >= brw_scroll + max_lines) break; }
+    }
+}
+
+static void brw_on_touch(int tx, int ty, int pressed) {
+    if (pressed) return;
+    if (point_in_rect(tx, ty, screen_width-80, 54, 80, 36)) {
+        brw_input_mode = 1;
+        keyboard_show(brw_got_url, brw_url);
+        return;
+    }
+}
+
+static void brw_cleanup(void) { brw_content[0] = 0; brw_content_len = 0; }
+
+static App app_brw = {"Browser", "WEB", brw_init, brw_draw, brw_on_touch, brw_cleanup, NULL};
+
+/* ========================= KUAL INTEGRATION ========================= */
+static char kual_apps[32][128];
+static int kual_count = 0;
+
+static void kual_scan(void) {
+    kual_count = 0;
+    DIR *d = opendir("/mnt/us/extensions");
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && kual_count < 32) {
+        if (e->d_name[0] == '.') continue;
+        char json[256]; snprintf(json, sizeof(json), "/mnt/us/extensions/%s/menu.json", e->d_name);
+        if (access(json, F_OK) == 0) { strncpy(kual_apps[kual_count], e->d_name, 127); kual_count++; }
+    }
+    closedir(d);
+}
+
+/* ========================= COMMUNITY APPS ========================= */
+static char community_names[32][64];
+static char community_bins[32][256];
+static int community_count = 0;
+
+static void community_scan(void) {
+    community_count = 0;
+    mkdir(COMMUNITY_APPS_DIR, 0755);
+    DIR *d = opendir(COMMUNITY_APPS_DIR); if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && community_count < 32) {
+        if (e->d_name[0] == '.') continue;
+        char full[512]; snprintf(full, sizeof(full), "%s/%s", COMMUNITY_APPS_DIR, e->d_name);
+        struct stat st;
+        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
+            char bin[512]; snprintf(bin, sizeof(bin), "%s/app.bin", full);
+            if (access(bin, X_OK) == 0) {
+                strncpy(community_names[community_count], e->d_name, 63);
+                strncpy(community_bins[community_count], bin, 255);
+                community_count++;
+            }
+        }
+    }
+    closedir(d);
+}
+
+/* ========================= SIGNAL HANDLER ========================= */
 void signal_handler(int sig) {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "SIGNAL %d received", sig);
-    log_msg(buf);
-    if (sig == SIGSEGV) {
-        log_msg("SEGFAULT! Crashing.");
+    if (sig == SIGSEGV || sig == SIGBUS || sig == SIGABRT) {
+        log_msg("FATAL SIGNAL received");
+        restore_kindle_ui();
         _exit(1);
     }
     running = 0;
 }
 
-int main(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
-
-    log_msg("=== KindleJap v" KINDLEJAP_VERSION " ===");
-    log_msg("main: starting");
-    log_msg("main: log file: " LOGFILE);
-
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
-    signal(SIGSEGV, signal_handler);
-    signal(SIGBUS, signal_handler);
-    signal(SIGABRT, signal_handler);
-
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
-
-    int lock_fd = acquire_lock();
-    if (lock_fd < 0) {
-        log_msg("main: another instance running, killing it");
-        system("killall kindlejap-bin 2>/dev/null");
-        sleep(1);
-        lock_fd = acquire_lock();
-        if (lock_fd < 0) {
-            log_msg("main: FAILED to acquire lock");
-            fprintf(stderr, "Failed to acquire lock\n");
-            return 1;
-        }
-    }
-
-    log_msg("main: init_framebuffer");
-    init_framebuffer();
-
-    log_msg("main: show_splash_init");
-    show_splash_init();
-
-    log_msg("main: init_input");
-    init_input();
-
-    if (input_fd >= 0) {
-        draw_text(50, 260, "[OK] Input device found", COLOR_BLACK, 1);
-    } else {
-        draw_text(50, 260, "[WARN] No input device", COLOR_DARK, 1);
-    }
-
-    draw_text(50, 290, "Checking for updates...", COLOR_DARK, 1);
-    draw_text(50, 310, "Starting launcher...", COLOR_DARK, 1);
+/* ========================= SPLASH SCREEN ========================= */
+void show_splash(void) {
+    draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
+    draw_rect(0, screen_height/2 - 80, screen_width, 160, COLOR_DARK);
+    draw_text_centered(screen_height/2 - 50, "KINDLEJAP", COLOR_WHITE, 4);
+    draw_text_centered(screen_height/2, "v" KINDLEJAP_VERSION, COLOR_LIGHT, 2);
     refresh_screen();
 
-    menu_items[0].action = action_apps;
-    menu_items[1].action = action_settings;
-    menu_items[2].action = action_exit;
-    menu_items[3].action = action_update_yes;
-    menu_items[4].action = action_update_no;
-
+    const char *steps[] = {"Initializing display", "Loading input devices", "Scanning apps", "Preparing launcher"};
+    for (int i = 0; i < 4; i++) {
+        int y = screen_height/2 + 80 + i * 30;
+        draw_text_centered(y, steps[i], COLOR_DARK, 2);
+        int pw = 300;
+        draw_rect(screen_width/2 - pw/2, y - 10, pw, 4, COLOR_LIGHT);
+        draw_rect(screen_width/2 - pw/2, y - 10, pw * (i+1) / 4, 4, COLOR_DARK);
+        refresh_screen_partial();
+        usleep(300000);
+    }
+    draw_text_centered(screen_height/2 + 220, "Ready!", COLOR_BLACK, 3);
+    refresh_screen();
     usleep(500000);
+}
 
-    log_msg("main: redraw_screen");
-    redraw_screen();
+/* ========================= MAIN ========================= */
+int main(int argc, char *argv[]) {
+    (void)argc; (void)argv;
 
-    pthread_t update_check_thread;
-    pthread_create(&update_check_thread, NULL, check_updates_thread, NULL);
-    pthread_detach(update_check_thread);
+    signal(SIGINT, signal_handler); signal(SIGTERM, signal_handler);
+    signal(SIGSEGV, signal_handler); signal(SIGBUS, signal_handler);
+    signal(SIGABRT, signal_handler);
 
-    log_msg("main: entering main loop");
+    log_msg("=== KindleJap " KINDLEJAP_VERSION " ===");
+    if (acquire_lock() < 0) { log_msg("Already running"); exit(1); }
 
-    int loop_count = 0;
+    log_msg("init_framebuffer"); init_framebuffer();
+    show_splash();
+    log_msg("init_input"); init_input();
+
+    app_register(&app_calc);
+    app_register(&app_fe);
+    app_register(&app_net);
+    app_register(&app_brw);
+
+    kual_scan(); community_scan();
+    log_msg("setup done");
+
+    active_app_idx = -1;
+    open_count = 0;
+
     while (running) {
+        draw_rect(0, 0, screen_width, screen_height - TASKBAR_H, COLOR_WHITE);
+
+        if (menu_visible) {
+            menu_draw();
+        } else if (active_app_idx >= 0 && active_app_idx < open_count) {
+            int app_h = screen_height - TASKBAR_H;
+            if (keyboard_visible) app_h -= KEYBOARD_H;
+            open_apps[active_app_idx]->draw(0, 0, screen_width, app_h);
+            keyboard_draw();
+        } else {
+            draw_rect(0, 0, screen_width, screen_height/3, COLOR_DARK);
+            draw_text_centered(screen_height/6 - 15, "KINDLEJAP", COLOR_WHITE, 4);
+            draw_text_centered(screen_height/6 + 20, "v" KINDLEJAP_VERSION, COLOR_LIGHT, 2);
+            draw_text_centered(screen_height/3 + 40, "Tap MENU to open apps", COLOR_DARK, 2);
+            draw_text_centered(screen_height/3 + 80, "Hold menu tab to close app", COLOR_GRAY, 1);
+        }
+
+        taskbar_draw();
+        refresh_screen_partial();
+
         if (input_fd >= 0) {
-            process_input();
+            struct input_event ev;
+            static int touch_x = 0, touch_y = 0, touching = 0;
+            while (read(input_fd, &ev, sizeof(ev)) == sizeof(ev)) {
+                if (ev.type == EV_ABS) {
+                    if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X) touch_x = ev.value;
+                    if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y) touch_y = ev.value;
+                }
+                if (ev.type == EV_KEY && ev.code == BTN_TOUCH) touching = ev.value;
+                if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+                    if (touching) {
+                        if (keyboard_visible) {
+                            if (touch_y >= kb_start_y()) keyboard_handle_touch(touch_x, touch_y);
+                            else if (active_app_idx >= 0) open_apps[active_app_idx]->on_touch(touch_x, touch_y, 1);
+                        } else if (touch_y >= screen_height - TASKBAR_H) {
+                            taskbar_handle_touch(touch_x, touch_y, 1);
+                        } else if (menu_visible) {
+                            menu_handle_touch(touch_x, touch_y, 1);
+                        } else if (active_app_idx >= 0) {
+                            open_apps[active_app_idx]->on_touch(touch_x, touch_y, 1);
+                        }
+                    } else {
+                        if (keyboard_visible && touch_y >= kb_start_y()) {
+                        } else if (touch_y >= screen_height - TASKBAR_H) {
+                            taskbar_handle_touch(touch_x, touch_y, 0);
+                        } else if (menu_visible) {
+                            menu_handle_touch(touch_x, touch_y, 0);
+                        } else if (active_app_idx >= 0) {
+                            open_apps[active_app_idx]->on_touch(touch_x, touch_y, 0);
+                        }
+                    }
+                }
+            }
         }
-        loop_count++;
-        if (loop_count % 200 == 0) {
-            log_msg("main: loop alive");
-        }
-        usleep(50000);
+        usleep(16000);
     }
 
-    log_msg("main: exiting");
-    cleanup();
-
-    if (logfp) fclose(logfp);
-    printf("KindleJap exited.\n");
+    log_msg("shutting down");
+    for (int i = open_count - 1; i >= 0; i--) app_close(i);
+    restore_kindle_ui();
+    release_lock();
+    if (fb_mem) munmap(fb_mem, finfo.smem_len);
+    if (fb_fd >= 0) close(fb_fd);
+    if (input_fd >= 0) close(input_fd);
+    log_msg("exit");
     return 0;
 }

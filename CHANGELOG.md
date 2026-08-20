@@ -2,6 +2,25 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.0.0] - 2026-08-19
+
+### Added
+- App framework with maximize mode, app stack, and registry
+- QWERTY keyboard overlay with shift, backspace, and submit
+- Calculator app with basic operations
+- File Explorer app with directory browsing
+- Network Manager app with WiFi scanning and connection
+- Browser app with URL input and basic text rendering
+- Taskbar with open app tabs
+- Long-press taskbar tab to close apps
+- KUAL app integration (scans /mnt/us/extensions/)
+- Community apps support (/mnt/us/kindlejap_apps/)
+- Improved splash screen with progress bar
+
+### Changed
+- Complete rewrite of kindlejap.c as single-file application
+- Menu now lists all built-in apps directly
+
 ## [1.2.0] - 2026-08-19
 
 ### Fixed
