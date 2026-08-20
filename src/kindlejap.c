@@ -197,6 +197,7 @@ static const unsigned char font5x7[][7] = {
 
 void refresh_screen(void) {
     if (fb_fd < 0) return;
+    msync(fb_mem, screen_height * finfo.line_length, MS_SYNC);
     struct mxcfb_update_data data;
     memset(&data, 0, sizeof(data));
     data.update_region.top = 0;
@@ -208,9 +209,14 @@ void refresh_screen(void) {
     data.update_marker = 1;
     data.temp = 0x1001;
     data.flags = 0;
-    ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
+    int ret = ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "refresh_screen: SEND_UPDATE ret=%d errno=%d", ret, errno);
+    log_msg(buf);
     uint32_t marker = 1;
-    ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
+    ret = ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
+    snprintf(buf, sizeof(buf), "refresh_screen: WAIT_UPDATE ret=%d errno=%d", ret, errno);
+    log_msg(buf);
 }
 
 void refresh_screen_partial(void) {
@@ -226,9 +232,14 @@ void refresh_screen_partial(void) {
     data.update_marker = 2;
     data.temp = 0x1001;
     data.flags = 0;
-    ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
+    int ret = ioctl(fb_fd, MXCFB_SEND_UPDATE, &data);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "refresh_partial: SEND_UPDATE ret=%d errno=%d", ret, errno);
+    log_msg(buf);
     uint32_t marker = 2;
-    ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
+    ret = ioctl(fb_fd, MXCFB_WAIT_FOR_UPDATE, &marker);
+    snprintf(buf, sizeof(buf), "refresh_partial: WAIT_UPDATE ret=%d errno=%d", ret, errno);
+    log_msg(buf);
 }
 
 int acquire_lock(void) {
