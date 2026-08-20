@@ -2,6 +2,25 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [3.1.0] - 2026-08-20
+
+### Added
+- First-time setup wizard with 3 steps
+- **Step 1 - Welcome**: Launcher overview, Kindle model detection (SOC ID), screen resolution, firmware version
+- **Step 2 - Instructions**: Interactive 6-step tutorial covering:
+  - Top bar (WiFi, battery, notifications)
+  - Menu (power button control)
+  - Sleep mode
+  - Opening apps
+  - Notifications sidebar
+  - Scrolling
+  - Animated highlight cursor showing where to tap
+- **Step 3 - Finish**: Completion screen with credits to victorbillyph
+- Progress bar in top bar during setup
+- Device detection: Paperwhite 1-5, Voyage, Kindle 7/8/10
+- Setup state persisted to `/data/setup_done` file
+- Setup only runs on first launch
+
 ## [3.0.0] - 2026-08-20
 
 ### Added

@@ -16,7 +16,7 @@
 #include <math.h>
 #include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "3.0.0"
+#define KINDLEJAP_VERSION "3.1.0"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -24,6 +24,7 @@
 #define DATA_DIR "/mnt/us/extensions/kindlejap/data"
 #define SETTINGS_FILE "/mnt/us/extensions/kindlejap/data/settings.cfg"
 #define APPSTATE_FILE "/mnt/us/extensions/kindlejap/data/appstate.cfg"
+#define SETUP_DONE_FILE "/mnt/us/extensions/kindlejap/data/setup_done"
 #define COMMUNITY_APPS_DIR "/mnt/us/kindlejap_apps"
 #define TOPBAR_H 40
 #define KEYBOARD_H 360
@@ -1941,6 +1942,311 @@ static void browser_handle(int tx, int ty, int released) {
     }
 }
 
+static int setup_active = 0;
+static int setup_step = 0;
+static int setup_tutorial_step = 0;
+static int setup_tutorial_done = 0;
+static char kindle_model[128] = "Kindle";
+static char kindle_fw[64] = "";
+static char kindle_screen[64] = "";
+
+static void setup_detect_device(void) {
+    FILE *f;
+    char line[256];
+    f = fopen("/proc/version", "r");
+    if (f) {
+        if (fgets(line, sizeof(line), f)) {
+            snprintf(kindle_fw, sizeof(kindle_fw), "%s", line);
+            kindle_fw[strcspn(kindle_fw, "\n")] = 0;
+        }
+        fclose(f);
+    }
+    f = fopen("/etc/issue", "r");
+    if (f) {
+        if (fgets(line, sizeof(line), f)) {
+            line[strcspn(line, "\n")] = 0;
+            snprintf(kindle_model, sizeof(kindle_model), "%s", line);
+        }
+        fclose(f);
+    }
+    if (strlen(kindle_model) <= 1) {
+        f = popen("cat /sys/devices/soc0/soc_id 2>/dev/null", "r");
+        if (f) {
+            if (fgets(line, sizeof(line), f)) {
+                line[strcspn(line, "\n")] = 0;
+                int id = atoi(line);
+                switch (id) {
+                    case 4: snprintf(kindle_model, sizeof(kindle_model), "Kindle Paperwhite 1"); break;
+                    case 8: snprintf(kindle_model, sizeof(kindle_model), "Kindle Paperwhite 2"); break;
+                    case 24: snprintf(kindle_model, sizeof(kindle_model), "Kindle Paperwhite 3 (PW3)"); break;
+                    case 28: snprintf(kindle_model, sizeof(kindle_model), "Kindle Paperwhite 4 (PW4)"); break;
+                    case 272: snprintf(kindle_model, sizeof(kindle_model), "Kindle Paperwhite 5 (PW5)"); break;
+                    case 11: snprintf(kindle_model, sizeof(kindle_model), "Kindle Voyage"); break;
+                    case 10: snprintf(kindle_model, sizeof(kindle_model), "Kindle 7"); break;
+                    case 13: snprintf(kindle_model, sizeof(kindle_model), "Kindle 8"); break;
+                    case 233: snprintf(kindle_model, sizeof(kindle_model), "Kindle 10"); break;
+                    default: snprintf(kindle_model, sizeof(kindle_model), "Kindle (SOC ID: %d)", id); break;
+                }
+            }
+            pclose(f);
+        }
+    }
+    snprintf(kindle_screen, sizeof(kindle_screen), "%dx%d", screen_width, screen_height);
+}
+
+static int setup_is_done(void) {
+    FILE *f = fopen(SETUP_DONE_FILE, "r");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+
+static void setup_mark_done(void) {
+    FILE *f = fopen(SETUP_DONE_FILE, "w");
+    if (f) { fprintf(f, "done=1\n"); fclose(f); }
+}
+
+static void setup_begin(void) {
+    setup_active = 1;
+    setup_step = 0;
+    setup_tutorial_step = 0;
+    setup_tutorial_done = 0;
+    setup_detect_device();
+    dirty = 1;
+}
+
+static void setup_finish(void) {
+    setup_active = 0;
+    setup_mark_done();
+    dirty = 1;
+    log_msg("Setup completed");
+}
+
+#define TUTORIAL_STEPS 6
+static const char *tutorial_titles[] = {
+    "The Top Bar",
+    "The Menu",
+    "Sleep Mode",
+    "Opening Apps",
+    "Notifications",
+    "Scrolling"
+};
+static const char *tutorial_texts[] = {
+    "The top bar shows WiFi status on the left and battery percentage on the right.\n\nTap the top-right area to open the notification sidebar.",
+    "Press the power button to open the control menu.\n\nFrom here you can open the main menu, put the device to sleep, or exit KindleJap.",
+    "Press power once to see the menu, then tap 'Sleep' to put the device to sleep.\n\nThe Kindle UI is preserved and will return when you wake up.",
+    "The main menu shows all installed apps.\n\nTap any app name to open it. You can install more apps from the Package Manager.",
+    "The notification sidebar shows alerts from apps.\n\nTap the top-right corner of the screen to toggle it. Tap a notification action to respond.",
+    "Use the arrow buttons at the bottom of the screen to scroll through content.\n\nSwipe or tap ^ and v to navigate up and down."
+};
+static int tutorial_highlight_x[TUTORIAL_STEPS];
+static int tutorial_highlight_y[TUTORIAL_STEPS];
+static int tutorial_highlight_w[TUTORIAL_STEPS];
+static int tutorial_highlight_h[TUTORIAL_STEPS];
+static int tutorial_anim_frame = 0;
+
+static void setup_init_tutorial(void) {
+    tutorial_highlight_x[0] = 10; tutorial_highlight_y[0] = 2; tutorial_highlight_w[0] = 200; tutorial_highlight_h[0] = 36;
+    tutorial_highlight_x[1] = screen_width/2-50; tutorial_highlight_y[1] = TOPBAR_H+4; tutorial_highlight_w[1] = 100; tutorial_highlight_h[1] = 36;
+    tutorial_highlight_x[2] = screen_width/2-50; tutorial_highlight_y[2] = TOPBAR_H+4; tutorial_highlight_w[2] = 100; tutorial_highlight_h[2] = 36;
+    tutorial_highlight_x[3] = 100; tutorial_highlight_y[3] = TOPBAR_H+100; tutorial_highlight_w[3] = screen_width-200; tutorial_highlight_h[3] = 60;
+    tutorial_highlight_x[4] = screen_width-180; tutorial_highlight_y[4] = 2; tutorial_highlight_w[4] = 160; tutorial_highlight_h[4] = 36;
+    tutorial_highlight_x[5] = 10; tutorial_highlight_y[5] = screen_height-TOPBAR_H-80; tutorial_highlight_w[5] = 40; tutorial_highlight_h[5] = 40;
+}
+
+static void setup_draw_topbar(int tutorial) {
+    draw_rect(0, 0, screen_width, TOPBAR_H, COLOR_BLACK);
+    draw_text(16, 10, wifi ? "WiFi" : "---", COLOR_WHITE, 2);
+    char bstr[16];
+    int batt = battery_percent();
+    snprintf(bstr, sizeof(bstr), "%d%%", batt);
+    int bw = text_width(bstr, 2);
+    draw_text(screen_width - bw - 16, 10, bstr, COLOR_WHITE, 2);
+    if (!tutorial) {
+        int progress_w = 200;
+        int progress_x = (screen_width - progress_w) / 2;
+        int step = setup_step;
+        int total = 2;
+        draw_rect(progress_x, 14, progress_w, 8, COLOR_DARK);
+        draw_rect(progress_x, 14, progress_w * step / total, 8, COLOR_WHITE);
+    }
+}
+
+static void setup_draw_buttons(const char *left_label, const char *right_label) {
+    int btn_h = 36;
+    int btn_w = 160;
+    int btn_y = screen_height - TOPBAR_H - btn_h - 20;
+    if (left_label) {
+        draw_rounded_rect(20, btn_y, btn_w, btn_h, 8, COLOR_MID);
+        draw_text_centered_in(20, btn_y + 8, btn_w, left_label, COLOR_WHITE, 2);
+    }
+    if (right_label) {
+        draw_rounded_rect(screen_width - btn_w - 20, btn_y, btn_w, btn_h, 8, COLOR_DARK);
+        draw_text_centered_in(screen_width - btn_w - 20, btn_y + 8, btn_w, right_label, COLOR_WHITE, 2);
+    }
+}
+
+static int setup_draw_step0(void) {
+    setup_draw_topbar(0);
+    int y = TOPBAR_H + 30;
+    draw_text_centered_in(0, y, screen_width, "Welcome to", COLOR_MID, 3);
+    y += 42;
+    draw_text_centered_in(0, y, screen_width, "KindleJap", COLOR_BLACK, 5);
+    y += 70;
+    draw_rounded_rect(60, y, screen_width-120, 2, 1, COLOR_LIGHT);
+    y += 20;
+    draw_text_centered_in(0, y, screen_width, "A custom launcher for your Kindle", COLOR_DARK, 2);
+    y += 30;
+    draw_text_centered_in(0, y, screen_width, "with apps, package manager,", COLOR_DARK, 1);
+    y += 16;
+    draw_text_centered_in(0, y, screen_width, "notifications, and more.", COLOR_DARK, 1);
+    y += 40;
+    draw_rounded_rect(40, y, screen_width-80, 90, 8, COLOR_LIGHT);
+    draw_text(60, y+12, "Device:", COLOR_DARK, 2);
+    draw_text(60, y+36, kindle_model, COLOR_BLACK, 2);
+    draw_text(60, y+60, kindle_screen, COLOR_DARK, 1);
+    if (strlen(kindle_fw) > 0) {
+        char fw_short[64];
+        strncpy(fw_short, kindle_fw, 63);
+        fw_short[60] = 0;
+        draw_text(260, y+60, fw_short, COLOR_DARK, 1);
+    }
+    y += 110;
+    draw_text_centered_in(0, y, screen_width, "Version " KINDLEJAP_VERSION, COLOR_MID, 1);
+    setup_draw_buttons(NULL, "Next");
+    return 1;
+}
+
+static int setup_draw_step1(void) {
+    setup_draw_topbar(0);
+    int y = TOPBAR_H + 20;
+    draw_text_centered_in(0, y, screen_width, "Instructions", COLOR_BLACK, 3);
+    y += 44;
+    draw_text_centered_in(0, y, screen_width, "Learn how to use KindleJap", COLOR_DARK, 1);
+    y += 30;
+    int tx = 30;
+    int tw = screen_width - 60;
+    draw_rounded_rect(tx, y, tw, 280, 8, COLOR_LIGHT);
+    const char *title = tutorial_titles[setup_tutorial_step];
+    const char *text = tutorial_texts[setup_tutorial_step];
+    draw_text_centered_in(tx, y+12, tw, title, COLOR_BLACK, 2);
+    y += 40;
+    int ty = y;
+    const char *line = text;
+    while (*line) {
+        const char *nl = strchr(line, '\n');
+        int llen = nl ? (nl - line) : (int)strlen(line);
+        if (llen > 0 && llen < 256) {
+            char lbuf[256];
+            memcpy(lbuf, line, llen);
+            lbuf[llen] = 0;
+            draw_text(tx+16, ty, lbuf, COLOR_DARK, 1);
+        }
+        ty += 18;
+        if (!nl) break;
+        line = nl + 1;
+        while (*line == '\n') { ty += 8; line++; }
+    }
+    y += 280 + 10;
+    tutorial_anim_frame++;
+    if (tutorial_anim_frame > 30) tutorial_anim_frame = 0;
+    int hx = tutorial_highlight_x[setup_tutorial_step];
+    int hy = tutorial_highlight_y[setup_tutorial_step];
+    int hw = tutorial_highlight_w[setup_tutorial_step];
+    int hh = tutorial_highlight_h[setup_tutorial_step];
+    int pulse = (tutorial_anim_frame / 5) % 2;
+    if (pulse) {
+        draw_rect(hx-2, hy-2, hw+4, hh+4, COLOR_DARK);
+    } else {
+        draw_rect(hx-1, hy-1, hw+2, hh+2, COLOR_LIGHT);
+        draw_rect(hx, hy, hw, hh, COLOR_DARK);
+    }
+    y += 10;
+    char step_str[32];
+    snprintf(step_str, sizeof(step_str), "%d / %d", setup_tutorial_step+1, TUTORIAL_STEPS);
+    draw_text_centered_in(0, y, screen_width, step_str, COLOR_MID, 1);
+    if (setup_tutorial_step < TUTORIAL_STEPS - 1)
+        setup_draw_buttons("Back", "Next");
+    else
+        setup_draw_buttons("Back", "Finish Tutorial");
+    return 1;
+}
+
+static int setup_draw_step2(void) {
+    setup_draw_topbar(0);
+    int y = TOPBAR_H + 40;
+    draw_text_centered_in(0, y, screen_width, "All Set!", COLOR_BLACK, 4);
+    y += 60;
+    draw_rounded_rect(60, y, screen_width-120, 2, 1, COLOR_LIGHT);
+    y += 24;
+    draw_text_centered_in(0, y, screen_width, "KindleJap is ready to use.", COLOR_DARK, 2);
+    y += 34;
+    draw_text_centered_in(0, y, screen_width, "You can always revisit the", COLOR_MID, 1);
+    y += 18;
+    draw_text_centered_in(0, y, screen_width, "tutorial by pressing the power", COLOR_MID, 1);
+    y += 18;
+    draw_text_centered_in(0, y, screen_width, "button and checking the menu.", COLOR_MID, 1);
+    y += 50;
+    draw_rounded_rect(80, y, screen_width-160, 100, 8, COLOR_LIGHT);
+    y += 16;
+    draw_text_centered_in(0, y, screen_width, "Created by", COLOR_MID, 1);
+    y += 22;
+    draw_text_centered_in(0, y, screen_width, "victorbillyph", COLOR_BLACK, 3);
+    y += 38;
+    draw_text_centered_in(0, y, screen_width, "github.com/victorbillyph", COLOR_DARK, 1);
+    setup_draw_buttons(NULL, "Start KindleJap");
+    return 1;
+}
+
+static void setup_draw(void) {
+    draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
+    switch (setup_step) {
+        case 0: setup_draw_step0(); break;
+        case 1: setup_draw_step1(); break;
+        case 2: setup_draw_step2(); break;
+    }
+}
+
+static void setup_handle(int tx, int ty, int released) {
+    if (!released) return;
+    int btn_h = 36;
+    int btn_w = 160;
+    int btn_y = screen_height - TOPBAR_H - btn_h - 20;
+
+    if (setup_step == 0) {
+        if (point_in_rect(tx, ty, screen_width - btn_w - 20, btn_y, btn_w, btn_h)) {
+            setup_step = 1;
+            setup_tutorial_step = 0;
+            setup_init_tutorial();
+            dirty = 1;
+        }
+    } else if (setup_step == 1) {
+        int left_active = 1;
+        int right_x = screen_width - btn_w - 20;
+        if (point_in_rect(tx, ty, right_x, btn_y, btn_w, btn_h)) {
+            if (setup_tutorial_step < TUTORIAL_STEPS - 1) {
+                setup_tutorial_step++;
+            } else {
+                setup_step = 2;
+            }
+            tutorial_anim_frame = 0;
+            dirty = 1;
+        } else if (point_in_rect(tx, ty, 20, btn_y, btn_w, btn_h)) {
+            if (setup_tutorial_step > 0) {
+                setup_tutorial_step--;
+            } else {
+                setup_step = 0;
+            }
+            tutorial_anim_frame = 0;
+            dirty = 1;
+        }
+    } else if (setup_step == 2) {
+        if (point_in_rect(tx, ty, screen_width - btn_w - 20, btn_y, btn_w, btn_h)) {
+            setup_finish();
+        }
+    }
+}
+
 #define MAX_INSTALLED_APPS 32
 #define PKG_APPS_DIR "/mnt/us/extensions/kindlejap/apps"
 #define PKG_INSTALLED_FILE "/mnt/us/extensions/kindlejap/data/installed.cfg"
@@ -2284,6 +2590,10 @@ int main(void) {
     community_scan_apps();
     pkg_load_installed();
     notif_add("Welcome", "KindleJap v" KINDLEJAP_VERSION " ready", "Dismiss");
+    if (!setup_is_done()) {
+        setup_begin();
+        log_msg("First run - starting setup");
+    }
     int saved_app = data_load_appstate();
     if (saved_app >= 0 && saved_app < 5) {
         const char *names[] = {"Calculator", "Files", "Network", "Browser", "Package Manager"};
@@ -2305,6 +2615,7 @@ int main(void) {
                     if (ev.value == 0) {
                         dirty = 1;
                         if (update_state == 1) { update_handle(touch_x, touch_y, 1); continue; }
+                        if (setup_active) { setup_handle(touch_x, touch_y, 1); continue; }
                         if (keyboard_visible) {
                             keyboard_handle_touch(touch_x, touch_y);
                             if (pkg_input_active && !keyboard_visible) {
@@ -2335,6 +2646,7 @@ int main(void) {
             struct input_event pev;
             while (read(power_btn_fd, &pev, sizeof(pev)) == sizeof(pev)) {
                 if (pev.type == EV_KEY && pev.code == 116 && pev.value == 1) {
+                    if (setup_active) continue;
                     dirty = 1;
                     if (menu_visible) { menu_visible = 0; }
                     else { downbar_visible = !downbar_visible; }
@@ -2350,14 +2662,18 @@ int main(void) {
         }
         if (!dirty) { usleep(50000); continue; }
         draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
-        if (active_app_idx >= 0 && active_app_idx < open_count) {
-            int app_h = screen_height - TOPBAR_H;
-            open_apps[active_app_idx]->draw(0, TOPBAR_H, screen_width, app_h);
+        if (setup_active) {
+            setup_draw();
+        } else {
+            if (active_app_idx >= 0 && active_app_idx < open_count) {
+                int app_h = screen_height - TOPBAR_H;
+                open_apps[active_app_idx]->draw(0, TOPBAR_H, screen_width, app_h);
+            }
+            topbar_draw();
+            downbar_draw();
+            menu_draw();
+            notif_sidebar_draw();
         }
-        topbar_draw();
-        downbar_draw();
-        menu_draw();
-        notif_sidebar_draw();
         if (keyboard_visible) keyboard_draw();
         update_draw();
         refresh_screen();
