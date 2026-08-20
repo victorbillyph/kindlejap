@@ -2,6 +2,14 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [2.5.1] - 2026-08-20
+
+### Fixed
+- Keyboard: dedicated special row at top (Shift, Backspace, Enter)
+- Keyboard: full-width Space bar at bottom
+- Keyboard: increased height for proper button spacing
+- Topbar: WiFi, notification badge, and battery properly spaced
+
 ## [2.5.0] - 2026-08-20
 
 ### Changed
