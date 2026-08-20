@@ -917,19 +917,6 @@ int main(void) {
     log_msg("Apps loaded");
     int touch_x = 0, touch_y = 0;
     while (running) {
-        if (!dirty) { usleep(50000); continue; }
-        draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
-        if (active_app_idx >= 0 && active_app_idx < open_count) {
-            int app_h = screen_height - TASKBAR_H;
-            open_apps[active_app_idx]->draw(0, 0, screen_width, app_h);
-        }
-        taskbar_draw();
-        menu_draw();
-        power_menu_draw();
-        if (keyboard_visible) keyboard_draw();
-        update_draw();
-        refresh_screen();
-        dirty = 0;
         if (input_fd >= 0) {
             struct input_event ev;
             while (read(input_fd, &ev, sizeof(ev)) == sizeof(ev)) {
@@ -971,6 +958,19 @@ int main(void) {
                 }
             }
         }
+        if (!dirty) { usleep(50000); continue; }
+        draw_rect(0, 0, screen_width, screen_height, COLOR_WHITE);
+        if (active_app_idx >= 0 && active_app_idx < open_count) {
+            int app_h = screen_height - TASKBAR_H;
+            open_apps[active_app_idx]->draw(0, 0, screen_width, app_h);
+        }
+        taskbar_draw();
+        menu_draw();
+        power_menu_draw();
+        if (keyboard_visible) keyboard_draw();
+        update_draw();
+        refresh_screen();
+        dirty = 0;
         usleep(50000);
     }
     for (int i=open_count-1; i>=0; i--)
