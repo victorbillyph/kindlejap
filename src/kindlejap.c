@@ -16,7 +16,7 @@
 #include <math.h>
 #include <sys/stat.h>
 
-#define KINDLEJAP_VERSION "3.1.0"
+#define KINDLEJAP_VERSION "4.2.0"
 #define GITHUB_API_URL "https://api.github.com/repos/victorbillyph/kindlejap/releases/latest"
 #define UPDATE_SCRIPT "/mnt/us/extensions/kindlejap/bin/update.sh"
 #define LOCKFILE "/tmp/kindlejap.lock"
@@ -637,6 +637,8 @@ static void browser_draw(int x, int y, int w, int h);
 static void browser_handle(int x, int y, int released);
 static void pkg_draw(int x, int y, int w, int h);
 static void pkg_handle(int x, int y, int released);
+static void bt_draw(int x, int y, int w, int h);
+static void bt_handle(int x, int y, int released);
 static void check_update(void);
 
 static App calc_app = {"Calculator", NULL, calc_draw, calc_handle, NULL};
@@ -644,6 +646,7 @@ static App file_app = {"Files", NULL, file_draw, file_handle, NULL};
 static App net_app = {"Network", net_init, net_draw, net_handle, NULL};
 static App browser_app = {"Browser", NULL, browser_draw, browser_handle, NULL};
 static App pkg_app = {"Package Manager", NULL, pkg_draw, pkg_handle, NULL};
+static App bt_app = {"Bluetooth", NULL, bt_draw, bt_handle, NULL};
 
 void app_register(App *app) {
     if (registered_count < MAX_REGISTERED_APPS) registered[registered_count++] = *app;
@@ -823,15 +826,15 @@ static void downbar_draw(void) {
 
 static void menu_draw(void) {
     if (!menu_visible) return;
-    int total = 5 + py_app_count + 2;
+    int total = 6 + py_app_count + 2;
     int mw = 280;
     int mh = 20 + total * 46 + 10;
     int mx = (screen_width - mw) / 2;
     int my = TOPBAR_H + 40;
     if (my + mh > screen_height - 10) my = screen_height - mh - 10;
     draw_rounded_rect(mx, my, mw, mh, CORNER_R, COLOR_WHITE);
-    const char *builtin[] = {"Calculator", "Files", "Network", "Browser", "Package Manager"};
-    for (int i = 0; i < 5; i++) {
+    const char *builtin[] = {"Calculator", "Files", "Network", "Browser", "Package Manager", "Bluetooth"};
+    for (int i = 0; i < 6; i++) {
         int iy = my + 10 + i * 46;
         draw_rounded_rect(mx+10, iy, mw-20, 40, 8, COLOR_LIGHT);
         draw_text_centered_in(mx+10, iy+10, mw-20, builtin[i], COLOR_BLACK, 2);
@@ -843,7 +846,7 @@ static void menu_draw(void) {
         snprintf(label, sizeof(label), "[Py] %s", py_apps[i].name);
         draw_text_centered_in(mx+10, iy+10, mw-20, label, COLOR_DARK, 2);
     }
-    int ui = 5 + py_app_count;
+    int ui = 6 + py_app_count;
     int iy_up = my + 10 + ui * 46;
     draw_rounded_rect(mx+10, iy_up, mw-20, 40, 8, COLOR_LIGHT);
     draw_text_centered_in(mx+10, iy_up+10, mw-20, "Check Update", COLOR_BLACK, 2);
@@ -867,26 +870,22 @@ static void downbar_handle_touch(int tx, int ty) {
 }
 
 static void menu_handle_touch(int tx, int ty) {
-    int total = 5 + py_app_count + 2;
+    int total = 6 + py_app_count + 2;
     int mw = 280;
     int mh = 20 + total * 46 + 10;
     int mx = (screen_width - mw) / 2;
     int my = TOPBAR_H + 40;
     if (my + mh > screen_height - 10) my = screen_height - mh - 10;
     if (!point_in_rect(tx, ty, mx, my, mw, mh)) { menu_visible = 0; return; }
-    App *apps[] = {&calc_app, &file_app, &net_app, &browser_app};
-    for (int i = 0; i < 4; i++) {
+    App *apps[] = {&calc_app, &file_app, &net_app, &browser_app, &pkg_app, &bt_app};
+    for (int i = 0; i < 6; i++) {
         int iy = my + 10 + i * 46;
         if (point_in_rect(tx, ty, mx+10, iy, mw-20, 40)) {
             app_open(apps[i]); menu_visible = 0; return;
         }
     }
-    int iy4 = my + 10 + 4 * 46;
-    if (point_in_rect(tx, ty, mx+10, iy4, mw-20, 40)) {
-        app_open(&pkg_app); menu_visible = 0; return;
-    }
     for (int i = 0; i < py_app_count; i++) {
-        int iy = my + 10 + (5 + i) * 46;
+        int iy = my + 10 + (6 + i) * 46;
         if (point_in_rect(tx, ty, mx+10, iy, mw-20, 40)) {
             py_launch(i);
             menu_visible = 0;
@@ -894,7 +893,7 @@ static void menu_handle_touch(int tx, int ty) {
             return;
         }
     }
-    int ui = 5 + py_app_count;
+    int ui = 6 + py_app_count;
     int iy_up = my + 10 + ui * 46;
     if (point_in_rect(tx, ty, mx+10, iy_up, mw-20, 40)) {
         menu_visible = 0;
@@ -2346,6 +2345,548 @@ static void browser_handle(int tx, int ty, int released) {
     }
 }
 
+#include <pthread.h>
+#include <sys/statvfs.h>
+
+#define USB_CHECK_PATH "/sys/bus/usb/devices"
+#define BT_HCI_DEVICE "/dev/ttyUSB0"
+
+static int usb_last_count = 0;
+static int bt_adapter_present = 0;
+static int bt_scan_running = 0;
+static int usb_monitor_running = 1;
+static pthread_t usb_monitor_tid;
+
+static int usb_count_devices(void) {
+    int count = 0;
+    DIR *d = opendir(USB_CHECK_PATH);
+    if (!d) return 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] >= '0' && e->d_name[0] <= '9') count++;
+    }
+    closedir(d);
+    return count;
+}
+
+static int bt_check_adapter(void) {
+    FILE *p = popen("hciconfig 2>/dev/null | grep -c 'BD Address'", "r");
+    if (!p) return 0;
+    char line[64];
+    int found = 0;
+    if (fgets(line, sizeof(line), p)) found = atoi(line);
+    pclose(p);
+    return found > 0;
+}
+
+static void *usb_monitor_thread(void *arg) {
+    (void)arg;
+    usb_last_count = usb_count_devices();
+    bt_adapter_present = bt_check_adapter();
+    while (usb_monitor_running) {
+        sleep(2);
+        int cur = usb_count_devices();
+        if (cur > usb_last_count) {
+            notif_add("USB", "DISPOSITIVO USB CONECTADO", "OK");
+            dirty = 1;
+            if (bt_check_adapter() && !bt_adapter_present) {
+                bt_adapter_present = 1;
+                notif_add("Bluetooth", "BLUETOOTH CONECTADO", "OK");
+                dirty = 1;
+            }
+        } else if (cur < usb_last_count) {
+            notif_add("USB", "DISPOSITIVO USB DESCONECTADO", "OK");
+            dirty = 1;
+            if (!bt_check_adapter()) bt_adapter_present = 0;
+        }
+        usb_last_count = cur;
+    }
+    return NULL;
+}
+
+static void usb_monitor_init(void) {
+    pthread_create(&usb_monitor_tid, NULL, usb_monitor_thread, NULL);
+    pthread_detach(usb_monitor_tid);
+    log_msg("USB monitor started");
+}
+
+typedef struct {
+    char mac[32];
+    char name[64];
+    int type;
+    int paired;
+    int connected;
+} BtDevice;
+
+#define BT_MAX_DEVICES 16
+#define BT_TYPE_UNKNOWN 0
+#define BT_TYPE_SPEAKER 1
+#define BT_TYPE_PHONE 2
+#define BT_TYPE_HEADSET 3
+#define BT_TYPE_KEYBOARD 4
+#define BT_TYPE_OTHER 5
+
+static BtDevice bt_devices[BT_MAX_DEVICES];
+static int bt_device_count = 0;
+static int bt_selected = -1;
+static int bt_mode = 0;
+#define BT_MODE_DEVICES 0
+#define BT_MODE_DETAIL 1
+#define BT_MODE_PHONE 2
+#define BT_MODE_SETTINGS 3
+static char bt_phone_number[64] = "";
+static char bt_phone_name[64] = "";
+static int bt_phone_incoming = 0;
+static int bt_settings_a2dp = 1;
+static int bt_settings_hfp = 1;
+static int bt_settings_auto_answer = 0;
+static int bt_detail_scroll = 0;
+
+static void bt_detect_type(int idx) {
+    if (idx < 0 || idx >= bt_device_count) return;
+    FILE *p = popen("bluetoothctl info 2>/dev/null", "r");
+    if (!p) return;
+    char line[256];
+    int in_device = 0;
+    bt_devices[idx].type = BT_TYPE_OTHER;
+    while (fgets(line, sizeof(line), p)) {
+        line[strcspn(line, "\n")] = 0;
+        if (strstr(line, bt_devices[idx].mac)) {
+            in_device = 1;
+            continue;
+        }
+        if (in_device && line[0] == '\t') {
+            if (strstr(line, "Class:")) {
+                char *cls = strstr(line, "0x");
+                if (cls) {
+                    unsigned long c = strtoul(cls, NULL, 16);
+                    unsigned int major = (c >> 8) & 0x1F;
+                    if (major == 0x04) bt_devices[idx].type = BT_TYPE_SPEAKER;
+                    else if (major == 0x07) bt_devices[idx].type = BT_TYPE_PHONE;
+                    else if (major == 0x04) bt_devices[idx].type = BT_TYPE_HEADSET;
+                    else if (major == 0x05) bt_devices[idx].type = BT_TYPE_KEYBOARD;
+                }
+            }
+            if (strstr(line, "Icon:")) {
+                if (strstr(line, "audio")) bt_devices[idx].type = BT_TYPE_SPEAKER;
+                else if (strstr(line, "phone")) bt_devices[idx].type = BT_TYPE_PHONE;
+                else if (strstr(line, "headset")) bt_devices[idx].type = BT_TYPE_HEADSET;
+                else if (strstr(line, "input-keyboard")) bt_devices[idx].type = BT_TYPE_KEYBOARD;
+            }
+            if (strstr(line, "Connected: yes")) bt_devices[idx].connected = 1;
+            if (strstr(line, "Paired: yes")) bt_devices[idx].paired = 1;
+        } else if (line[0] == '[' && in_device) {
+            in_device = 0;
+        }
+    }
+    pclose(p);
+}
+
+static void bt_scan(void) {
+    bt_device_count = 0;
+    bt_selected = -1;
+    system("bluetoothctl power on 2>/dev/null");
+    system("bluetoothctl agent on 2>/dev/null");
+    FILE *p = popen("timeout 8 bluetoothctl scan on 2>/dev/null & sleep 9; bluetoothctl devices 2>/dev/null", "r");
+    if (!p) {
+        FILE *p2 = popen("bluetoothctl devices 2>/dev/null", "r");
+        p = p2;
+    }
+    if (p) {
+        char line[256];
+        while (fgets(line, sizeof(line), p) && bt_device_count < BT_MAX_DEVICES) {
+            line[strcspn(line, "\n")] = 0;
+            if (strncmp(line, "Device ", 7) == 0) {
+                char *mac = line + 7;
+                char *name = strchr(mac, ' ');
+                if (name) {
+                    *name = 0;
+                    name++;
+                } else {
+                    name = "Unknown";
+                }
+                strncpy(bt_devices[bt_device_count].mac, mac, 31);
+                strncpy(bt_devices[bt_device_count].name, name, 63);
+                bt_devices[bt_device_count].type = BT_TYPE_UNKNOWN;
+                bt_devices[bt_device_count].paired = 0;
+                bt_devices[bt_device_count].connected = 0;
+                bt_detect_type(bt_device_count);
+                bt_device_count++;
+            }
+        }
+        pclose(p);
+    }
+    bt_scan_running = 0;
+    dirty = 1;
+}
+
+static void bt_pair(int idx) {
+    if (idx < 0 || idx >= bt_device_count) return;
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "echo -e 'pair %s\nyes' | timeout 10 bluetoothctl 2>/dev/null", bt_devices[idx].mac);
+    system(cmd);
+    snprintf(cmd, sizeof(cmd), "echo -e 'trust %s' | timeout 5 bluetoothctl 2>/dev/null", bt_devices[idx].mac);
+    system(cmd);
+    bt_detect_type(idx);
+    dirty = 1;
+}
+
+static void bt_connect(int idx) {
+    if (idx < 0 || idx >= bt_device_count) return;
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "echo 'connect %s' | timeout 10 bluetoothctl 2>/dev/null", bt_devices[idx].mac);
+    system(cmd);
+    bt_detect_type(idx);
+    dirty = 1;
+}
+
+static void bt_disconnect(int idx) {
+    if (idx < 0 || idx >= bt_device_count) return;
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "echo 'disconnect %s' | timeout 5 bluetoothctl 2>/dev/null", bt_devices[idx].mac);
+    system(cmd);
+    bt_detect_type(idx);
+    dirty = 1;
+}
+
+static void bt_remove(int idx) {
+    if (idx < 0 || idx >= bt_device_count) return;
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "echo 'remove %s' | timeout 5 bluetoothctl 2>/dev/null", bt_devices[idx].mac);
+    system(cmd);
+    for (int i = idx; i < bt_device_count - 1; i++) {
+        bt_devices[i] = bt_devices[i+1];
+    }
+    bt_device_count--;
+    bt_selected = -1;
+    bt_mode = BT_MODE_DEVICES;
+    dirty = 1;
+}
+
+static void bt_send_test_audio(int idx) {
+    if (idx < 0 || idx >= bt_device_count) return;
+    notif_add("Bluetooth", "Sending test tone...", "OK");
+    system("echo 'a]0' | timeout 3 aplay -t wav /dev/zero 2>/dev/null &");
+    system("timeout 3 paplay /usr/share/sounds/freedesktop/stereo/sound-added.oga 2>/dev/null &");
+    dirty = 1;
+}
+
+static void bt_send_at_command(const char *cmd) {
+    if (bt_selected < 0 || bt_selected >= bt_device_count) return;
+    char full_cmd[256];
+    snprintf(full_cmd, sizeof(full_cmd),
+        "echo -e 'AT%s\\r' | timeout 3 cat > /dev/rfcomm0 2>/dev/null", cmd);
+    system(full_cmd);
+}
+
+static void bt_answer_call(void) {
+    bt_send_at_command("ATA");
+    notif_add("Bluetooth", "Call answered", "OK");
+    dirty = 1;
+}
+
+static void bt_reject_call(void) {
+    bt_send_at_command("CHUP");
+    bt_phone_incoming = 0;
+    bt_phone_number[0] = 0;
+    bt_phone_name[0] = 0;
+    notif_add("Bluetooth", "Call rejected", "OK");
+    dirty = 1;
+}
+
+static void bt_type_icon(int x, int y, int type) {
+    switch (type) {
+        case BT_TYPE_SPEAKER:
+            draw_rect(x+2, y+2, 14, 12, COLOR_DARK);
+            draw_rect(x+16, y+4, 4, 8, COLOR_DARK);
+            draw_rect(x+2, y+5, 6, 6, COLOR_WHITE);
+            break;
+        case BT_TYPE_PHONE:
+            draw_rect(x+4, y, 10, 18, COLOR_DARK);
+            draw_rect(x+6, y+2, 6, 12, COLOR_WHITE);
+            draw_rect(x+7, y+16, 4, 2, COLOR_DARK);
+            break;
+        case BT_TYPE_HEADSET:
+            draw_rect(x+2, y+2, 14, 4, COLOR_DARK);
+            draw_rect(x+2, y+2, 4, 12, COLOR_DARK);
+            draw_rect(x+14, y+2, 4, 12, COLOR_DARK);
+            draw_rect(x+4, y+10, 4, 4, COLOR_DARK);
+            break;
+        default:
+            draw_rect(x+4, y+2, 10, 14, COLOR_DARK);
+            draw_rect(x+6, y+4, 6, 8, COLOR_WHITE);
+            break;
+    }
+}
+
+static const char *bt_type_name(int type) {
+    switch (type) {
+        case BT_TYPE_SPEAKER: return "Speaker";
+        case BT_TYPE_PHONE: return "Phone";
+        case BT_TYPE_HEADSET: return "Headset";
+        case BT_TYPE_KEYBOARD: return "Keyboard";
+        case BT_TYPE_OTHER: return "Device";
+        default: return "Unknown";
+    }
+}
+
+static void bt_draw(int x, int y, int w, int h) {
+    draw_rect(x, y, w, h, COLOR_WHITE);
+    draw_rounded_rect(x+10, y+10, 180, 36, 8, COLOR_DARK);
+    draw_text_centered_in(x+10, y+18, 180, "Scan", COLOR_WHITE, 2);
+    if (bt_scan_running) {
+        draw_rounded_rect(x+200, y+10, 200, 36, 8, COLOR_LIGHT);
+        draw_text_centered_in(x+200, y+18, 200, "Scanning...", COLOR_DARK, 2);
+    }
+    const char *tabs[] = {"Devices", "Phone", "Settings"};
+    for (int i=0; i<3; i++) {
+        int tx2 = x + w - 340 + i*112;
+        unsigned char bg = (bt_mode == i || (bt_mode == BT_MODE_DETAIL && i==0)) ? COLOR_DARK : COLOR_LIGHT;
+        unsigned char fg = (bt_mode == i || (bt_mode == BT_MODE_DETAIL && i==0)) ? COLOR_WHITE : COLOR_BLACK;
+        draw_rounded_rect(tx2, y+10, 104, 36, 8, bg);
+        draw_text_centered_in(tx2, y+18, 104, tabs[i], fg, 2);
+    }
+    int iy = y + 56;
+    if (bt_mode == BT_MODE_DEVICES || bt_mode == BT_MODE_DETAIL) {
+        if (bt_mode == BT_MODE_DETAIL && bt_selected >= 0 && bt_selected < bt_device_count) {
+            BtDevice *dev = &bt_devices[bt_selected];
+            draw_rounded_rect(x+10, iy, w-20, 50, 8, COLOR_LIGHT);
+            bt_type_icon(x+18, iy+14, dev->type);
+            draw_text(x+40, iy+8, dev->name, COLOR_BLACK, 3);
+            draw_text(x+40, iy+32, dev->mac, COLOR_DARK, 1);
+            iy += 60;
+            draw_text(x+20, iy, "Type:", COLOR_MID, 2);
+            draw_text(x+120, iy, bt_type_name(dev->type), COLOR_BLACK, 2);
+            iy += 30;
+            draw_text(x+20, iy, "Status:", COLOR_MID, 2);
+            if (dev->connected) {
+                draw_text(x+120, iy, "Connected", COLOR_BLACK, 2);
+            } else if (dev->paired) {
+                draw_text(x+120, iy, "Paired", COLOR_BLACK, 2);
+            } else {
+                draw_text(x+120, iy, "Not paired", COLOR_DARK, 2);
+            }
+            iy += 40;
+            if (!dev->paired) {
+                draw_rounded_rect(x+10, iy, w-20, 40, 8, COLOR_DARK);
+                draw_text_centered_in(x+10, iy+10, w-20, "Pair & Connect", COLOR_WHITE, 2);
+                iy += 48;
+            }
+            if (dev->paired && !dev->connected) {
+                draw_rounded_rect(x+10, iy, w/2-15, 40, 8, COLOR_DARK);
+                draw_text_centered_in(x+10, iy+10, w/2-15, "Connect", COLOR_WHITE, 2);
+                draw_rounded_rect(x+w/2+5, iy, w/2-15, 40, 8, COLOR_LIGHT);
+                draw_text_centered_in(x+w/2+5, iy+10, w/2-15, "Remove", COLOR_BLACK, 2);
+                iy += 48;
+            }
+            if (dev->connected) {
+                draw_rounded_rect(x+10, iy, w/2-15, 40, 8, COLOR_MID);
+                draw_text_centered_in(x+10, iy+10, w/2-15, "Disconnect", COLOR_WHITE, 2);
+                draw_rounded_rect(x+w/2+5, iy, w/2-15, 40, 8, COLOR_LIGHT);
+                draw_text_centered_in(x+w/2+5, iy+10, w/2-15, "Remove", COLOR_BLACK, 2);
+                iy += 48;
+            }
+            if (dev->type == BT_TYPE_SPEAKER && dev->connected) {
+                draw_rounded_rect(x+10, iy, w-20, 40, 8, COLOR_DARK);
+                draw_text_centered_in(x+10, iy+10, w-20, "Test Audio", COLOR_WHITE, 2);
+                iy += 48;
+            }
+            draw_rounded_rect(x+10, iy, 120, 36, 8, COLOR_LIGHT);
+            draw_text_centered_in(x+10, iy+6, 120, "< Back", COLOR_BLACK, 2);
+        } else {
+            if (bt_device_count == 0) {
+                draw_text_centered_in(x, y+h/2, w, "No devices found", COLOR_MID, 2);
+                draw_text_centered_in(x, y+h/2+30, w, "Tap Scan to discover", COLOR_MID, 1);
+            }
+            int max_rows = (h - 66) / 48;
+            for (int i=0; i<bt_device_count && i<max_rows; i++) {
+                if (iy + 44 > y + h) break;
+                draw_rounded_rect(x+10, iy, w-20, 44, 8, COLOR_LIGHT);
+                bt_type_icon(x+18, iy+12, bt_devices[i].type);
+                draw_text(x+40, iy+6, bt_devices[i].name, COLOR_BLACK, 2);
+                draw_text(x+40, iy+26, bt_devices[i].mac, COLOR_DARK, 1);
+                if (bt_devices[i].connected) {
+                    draw_rounded_rect(x+w-70, iy+8, 50, 28, 6, COLOR_MID);
+                    draw_text_centered_in(x+w-70, iy+12, 50, "ON", COLOR_WHITE, 1);
+                }
+                iy += 48;
+            }
+        }
+    } else if (bt_mode == BT_MODE_PHONE) {
+        if (bt_phone_incoming) {
+            draw_rounded_rect(x+10, iy, w-20, 80, 8, COLOR_DARK);
+            draw_text_centered_in(x+10, iy+10, w-20, "INCOMING CALL", COLOR_WHITE, 2);
+            if (strlen(bt_phone_number) > 0) {
+                draw_text_centered_in(x+10, iy+36, w-20, bt_phone_number, COLOR_WHITE, 3);
+            }
+            if (strlen(bt_phone_name) > 0) {
+                draw_text_centered_in(x+10, iy+60, w-20, bt_phone_name, COLOR_MID, 1);
+            }
+            iy += 90;
+            draw_rounded_rect(x+10, iy, w/2-15, 44, 8, COLOR_DARK);
+            draw_text_centered_in(x+10, iy+10, w/2-15, "Answer", COLOR_WHITE, 2);
+            draw_rounded_rect(x+w/2+5, iy, w/2-15, 44, 8, COLOR_MID);
+            draw_text_centered_in(x+w/2+5, iy+10, w/2-15, "Reject", COLOR_WHITE, 2);
+        } else {
+            draw_text_centered_in(x, y+h/2-20, w, "No incoming calls", COLOR_MID, 2);
+            draw_text_centered_in(x, y+h/2+10, w, "Connect a phone to use", COLOR_MID, 1);
+        }
+    } else if (bt_mode == BT_MODE_SETTINGS) {
+        draw_text(x+20, iy, "Bluetooth Settings", COLOR_BLACK, 3);
+        iy += 45;
+        draw_rounded_rect(x+10, iy, w-20, 44, 8, COLOR_LIGHT);
+        draw_text(x+20, iy+6, "A2DP Audio", COLOR_BLACK, 2);
+        draw_rounded_rect(x+w-70, iy+6, 50, 28, 6, bt_settings_a2dp ? COLOR_MID : COLOR_LIGHT);
+        draw_text_centered_in(x+w-70, iy+10, 50, bt_settings_a2dp ? "ON" : "OFF", COLOR_WHITE, 1);
+        iy += 52;
+        draw_rounded_rect(x+10, iy, w-20, 44, 8, COLOR_LIGHT);
+        draw_text(x+20, iy+6, "HFP Hands-free", COLOR_BLACK, 2);
+        draw_rounded_rect(x+w-70, iy+6, 50, 28, 6, bt_settings_hfp ? COLOR_MID : COLOR_LIGHT);
+        draw_text_centered_in(x+w-70, iy+10, 50, bt_settings_hfp ? "ON" : "OFF", COLOR_WHITE, 1);
+        iy += 52;
+        draw_rounded_rect(x+10, iy, w-20, 44, 8, COLOR_LIGHT);
+        draw_text(x+20, iy+6, "Auto-answer calls", COLOR_BLACK, 2);
+        draw_rounded_rect(x+w-70, iy+6, 50, 28, 6, bt_settings_auto_answer ? COLOR_MID : COLOR_LIGHT);
+        draw_text_centered_in(x+w-70, iy+10, 50, bt_settings_auto_answer ? "ON" : "OFF", COLOR_WHITE, 1);
+        iy += 52;
+        draw_text(x+20, iy, "Adapter:", COLOR_MID, 2);
+        draw_text(x+120, iy, bt_adapter_present ? "Connected" : "Not found", bt_adapter_present ? COLOR_BLACK : COLOR_DARK, 2);
+    }
+}
+
+static void bt_handle(int tx, int ty, int released) {
+    if (!released) return;
+    int iy = TOPBAR_H + 56;
+    if (point_in_rect(tx, ty, 10, TOPBAR_H+10, 180, 36)) {
+        bt_scan_running = 1;
+        dirty = 1;
+        FILE *p = popen("timeout 8 bluetoothctl scan on 2>/dev/null & sleep 9; bluetoothctl devices 2>/dev/null", "r");
+        if (p) {
+            bt_device_count = 0;
+            char line[256];
+            while (fgets(line, sizeof(line), p) && bt_device_count < BT_MAX_DEVICES) {
+                line[strcspn(line, "\n")] = 0;
+                if (strncmp(line, "Device ", 7) == 0) {
+                    char *mac = line + 7;
+                    char *name = strchr(mac, ' ');
+                    if (name) { *name = 0; name++; } else { name = "Unknown"; }
+                    strncpy(bt_devices[bt_device_count].mac, mac, 31);
+                    strncpy(bt_devices[bt_device_count].name, name, 63);
+                    bt_devices[bt_device_count].type = BT_TYPE_UNKNOWN;
+                    bt_devices[bt_device_count].paired = 0;
+                    bt_devices[bt_device_count].connected = 0;
+                    bt_detect_type(bt_device_count);
+                    bt_device_count++;
+                }
+            }
+            pclose(p);
+            bt_scan_running = 0;
+            dirty = 1;
+        }
+        return;
+    }
+    for (int i=0; i<3; i++) {
+        int tab_x = screen_width - 340 + i*112;
+        if (point_in_rect(tx, ty, tab_x, TOPBAR_H+10, 104, 36)) {
+            if (i == 0) bt_mode = BT_MODE_DEVICES;
+            else if (i == 1) bt_mode = BT_MODE_PHONE;
+            else if (i == 2) bt_mode = BT_MODE_SETTINGS;
+            bt_selected = -1;
+            dirty = 1;
+            return;
+        }
+    }
+    if (bt_mode == BT_MODE_SETTINGS) {
+        if (point_in_rect(tx, ty, 10, iy, screen_width-20, 44)) {
+            bt_settings_a2dp = !bt_settings_a2dp;
+            dirty = 1; return;
+        }
+        iy += 52;
+        if (point_in_rect(tx, ty, 10, iy, screen_width-20, 44)) {
+            bt_settings_hfp = !bt_settings_hfp;
+            dirty = 1; return;
+        }
+        iy += 52;
+        if (point_in_rect(tx, ty, 10, iy, screen_width-20, 44)) {
+            bt_settings_auto_answer = !bt_settings_auto_answer;
+            dirty = 1; return;
+        }
+        return;
+    }
+    if (bt_mode == BT_MODE_PHONE) {
+        if (bt_phone_incoming) {
+            if (point_in_rect(tx, ty, 10, iy+90, screen_width/2-15, 44)) {
+                bt_answer_call();
+            } else if (point_in_rect(tx, ty, screen_width/2+5, iy+90, screen_width/2-15, 44)) {
+                bt_reject_call();
+            }
+        }
+        return;
+    }
+    if (bt_mode == BT_MODE_DETAIL && bt_selected >= 0) {
+        BtDevice *dev = &bt_devices[bt_selected];
+        iy += 60;
+        iy += 30;
+        iy += 40;
+        if (!dev->paired) {
+            if (point_in_rect(tx, ty, 10, iy, screen_width-20, 40)) {
+                bt_pair(bt_selected);
+                bt_connect(bt_selected);
+                bt_mode = BT_MODE_DEVICES;
+                dirty = 1;
+            }
+            return;
+        }
+        if (dev->paired && !dev->connected) {
+            if (point_in_rect(tx, ty, 10, iy, screen_width/2-15, 40)) {
+                bt_connect(bt_selected);
+                dirty = 1;
+                return;
+            }
+            if (point_in_rect(tx, ty, screen_width/2+5, iy, screen_width/2-15, 40)) {
+                bt_remove(bt_selected);
+                return;
+            }
+            iy += 48;
+        }
+        if (dev->connected) {
+            if (point_in_rect(tx, ty, 10, iy, screen_width/2-15, 40)) {
+                bt_disconnect(bt_selected);
+                dirty = 1;
+                return;
+            }
+            if (point_in_rect(tx, ty, screen_width/2+5, iy, screen_width/2-15, 40)) {
+                bt_remove(bt_selected);
+                return;
+            }
+            iy += 48;
+        }
+        if (dev->type == BT_TYPE_SPEAKER && dev->connected) {
+            if (point_in_rect(tx, ty, 10, iy, screen_width-20, 40)) {
+                bt_send_test_audio(bt_selected);
+                return;
+            }
+            iy += 48;
+        }
+        if (point_in_rect(tx, ty, 10, iy, 120, 36)) {
+            bt_mode = BT_MODE_DEVICES;
+            bt_selected = -1;
+            dirty = 1;
+            return;
+        }
+        return;
+    }
+    int max_rows = (screen_height - TOPBAR_H - 66) / 48;
+    for (int i=0; i<bt_device_count && i<max_rows; i++) {
+        if (point_in_rect(tx, ty, 10, iy, screen_width-20, 44)) {
+            bt_selected = i;
+            bt_mode = BT_MODE_DETAIL;
+            dirty = 1;
+            return;
+        }
+        iy += 48;
+    }
+}
 static int setup_active = 0;
 static int setup_step = 0;
 static int setup_tutorial_step = 0;
@@ -3000,6 +3541,7 @@ int main(void) {
     community_scan_apps();
     py_scan_apps();
     pkg_load_installed();
+    usb_monitor_init();
     notif_add("Welcome", "KindleJap v" KINDLEJAP_VERSION " ready", "Dismiss");
     if (!setup_is_done()) {
         setup_begin();

@@ -2,6 +2,26 @@
 
 All notable changes to KindleJap will be documented in this file.
 
+## [4.2.0] - 2026-08-20
+
+### Added
+- **USB OTG Detection**: Background thread monitors USB devices, shows "DISPOSITIVO USB CONECTADO" / "DISPOSITIVO USB DESCONECTADO" notifications
+- **Bluetooth Adapter Detection**: Auto-detects USB Bluetooth adapters, shows "BLUETOOTH CONECTADO" notification
+- **Bluetooth App** (new builtin app):
+  - **Device Discovery**: Scan and list nearby Bluetooth devices with name and MAC
+  - **Device Type Detection**: Identifies speakers, phones, headsets, keyboards via Bluetooth class/icon
+  - **Device Type Icons**: Visual icons for each device type
+  - **Pair & Connect**: One-tap pairing with trust, connect, disconnect, remove
+  - **Detail View**: Tap device to see type, connection status, available actions
+  - **Speaker Support**: Test audio button when connected to speaker
+  - **Phone Support**: Incoming call display with number/name, Answer/Reject buttons via AT commands
+  - **Settings Tab**: Toggle A2DP audio, HFP hands-free, auto-answer calls
+  - **Adapter Status**: Shows Bluetooth adapter connection state
+
+### Changed
+- Menu expanded from 5 to 6 builtin apps
+- Version bumped to 4.2.0 (new feature)
+
 ## [4.1.0] - 2026-08-20
 
 ### Added
