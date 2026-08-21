@@ -2,7 +2,28 @@
 
 All notable changes to KindleJap will be documented in this file.
 
-## [4.0.0] - 2026-08-20
+## [4.1.0] - 2026-08-20
+
+### Added
+- **File Manager Sidebar**: Quick navigation panel with bookmarks (Root, Home, Documents, Extensions, Music, Pictures) and "Up Directory" button
+- **File/Folder Icons**: Visual distinction between directories (folder icon) and files (document icon) in listings
+- **File Action Menu**: Tap any file/folder to open context menu with:
+  - **Open**: Enter directory or view file (BMP/PGM images)
+  - **Copy**: Copy file to clipboard, paste in any directory
+  - **Move**: Move file to clipboard, paste in any directory
+  - **Info**: Show file name, size (bytes/KB/MB), and modification date
+  - **Delete**: Confirm delete with Yes/No dialog
+- **Paste Bar**: When file is copied/moved, bottom bar shows status and paste action
+- **Directory Sorting**: Folders sorted before files automatically
+- **Empty Directory Message**: Shows "(empty)" when directory has no contents
+
+### Changed
+- File manager UI completely rewritten with two-panel layout
+- Sidebar occupies left 200px, file listing on right side
+- Context menu overlays on tap instead of opening files directly
+- Version bumped to 4.1.0 (new features)
+
+## [4.0.1] - 2026-08-20
 
 ### Added
 - Python app development support — developers can now create apps in Python

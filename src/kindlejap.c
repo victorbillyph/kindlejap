@@ -1125,7 +1125,6 @@ static void file_load(const char *path) {
         file_count++;
     }
     closedir(d);
-    qsort(NULL, 0, 0, NULL);
     for (int i=0; i<file_count-1; i++) {
         for (int j=i+1; j<file_count; j++) {
             if (file_is_dir[i] < file_is_dir[j]) {
