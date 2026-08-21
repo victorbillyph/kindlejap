@@ -1094,8 +1094,21 @@ static void calc_handle(int tx, int ty, int released) {
 
 static char file_path[256] = "/mnt/us";
 static char file_entries[64][128];
+static int file_is_dir[64];
 static int file_count = 0;
 static int file_scroll = 0;
+static int file_mode = 0;
+static int file_action_idx = -1;
+static char file_clipboard[512] = "";
+static int file_clipboard_mode = 0;
+static int file_sidebar_scroll = 0;
+static char file_info_name[128] = "";
+static char file_info_size[64] = "";
+static char file_info_time[64] = "";
+static int file_confirm_delete = 0;
+
+#define FILE_SIDEBAR_W 200
+#define FILE_ROW_H 42
 
 static void file_load(const char *path) {
     strncpy(file_path, path, sizeof(file_path)-1);
@@ -1105,38 +1118,323 @@ static void file_load(const char *path) {
     while ((e = readdir(d)) != NULL && file_count < 64) {
         if (e->d_name[0]=='.' && (e->d_name[1]==0||(e->d_name[1]=='.'&&e->d_name[2]==0))) continue;
         strncpy(file_entries[file_count], e->d_name, 127);
+        char full[512];
+        snprintf(full, sizeof(full), "%s/%s", path, e->d_name);
+        struct stat st;
+        file_is_dir[file_count] = (stat(full, &st)==0 && S_ISDIR(st.st_mode)) ? 1 : 0;
         file_count++;
     }
     closedir(d);
+    qsort(NULL, 0, 0, NULL);
+    for (int i=0; i<file_count-1; i++) {
+        for (int j=i+1; j<file_count; j++) {
+            if (file_is_dir[i] < file_is_dir[j]) {
+                char tmp_name[128]; int tmp_dir;
+                strncpy(tmp_name, file_entries[i], 127);
+                tmp_dir = file_is_dir[i];
+                strncpy(file_entries[i], file_entries[j], 127);
+                file_is_dir[i] = file_is_dir[j];
+                strncpy(file_entries[j], tmp_name, 127);
+                file_is_dir[j] = tmp_dir;
+            }
+        }
+    }
+}
+
+static void file_draw_folder_icon(int x, int y) {
+    draw_rect(x+2, y+4, 16, 12, COLOR_DARK);
+    draw_rect(x, y+6, 4, 8, COLOR_DARK);
+    draw_rect(x+2, y+2, 8, 4, COLOR_DARK);
+    draw_rect(x+2, y+4, 16, 12, COLOR_WHITE);
+    draw_rect(x+4, y+6, 12, 8, COLOR_WHITE);
+}
+
+static void file_draw_file_icon(int x, int y) {
+    draw_rect(x+2, y, 14, 18, COLOR_DARK);
+    draw_rect(x+4, y+2, 10, 14, COLOR_WHITE);
+    draw_line(x+6, y+6, x+12, y+6, COLOR_DARK);
+    draw_line(x+6, y+9, x+12, y+9, COLOR_DARK);
+    draw_line(x+6, y+12, x+10, y+12, COLOR_DARK);
+}
+
+static void file_sidebar_draw(int x, int y, int h) {
+    draw_rect(x, y, FILE_SIDEBAR_W, h, COLOR_LIGHT);
+    draw_rect(x, y, 2, h, COLOR_MID);
+    draw_rounded_rect(x+8, y+8, FILE_SIDEBAR_W-16, 32, 6, COLOR_WHITE);
+    draw_text_centered_in(x+8, y+14, FILE_SIDEBAR_W-16, "Quick Nav", COLOR_BLACK, 2);
+    const char *bookmarks[] = {"/", "/mnt/us", "/mnt/us/documents", "/mnt/us/extensions", "/mnt/us/music", "/mnt/us/pictures"};
+    const char *labels[] = {"Root", "Home", "Documents", "Extensions", "Music", "Pictures"};
+    int nbook = 6;
+    int iy = y + 48;
+    for (int i=0; i<nbook && iy<y+h-10; i++) {
+        unsigned char bg = (strcmp(file_path, bookmarks[i])==0) ? COLOR_DARK : COLOR_WHITE;
+        unsigned char fg = (strcmp(file_path, bookmarks[i])==0) ? COLOR_WHITE : COLOR_BLACK;
+        draw_rounded_rect(x+8, iy, FILE_SIDEBAR_W-16, 32, 6, bg);
+        draw_text_centered_in(x+8, iy+8, FILE_SIDEBAR_W-16, labels[i], fg, 2);
+        iy += 38;
+    }
+    iy += 10;
+    draw_rect(x+8, iy, FILE_SIDEBAR_W-16, 2, COLOR_MID);
+    iy += 10;
+    draw_rounded_rect(x+8, iy, FILE_SIDEBAR_W-16, 32, 6, COLOR_WHITE);
+    draw_text_centered_in(x+8, iy+8, FILE_SIDEBAR_W-16, "Up Directory", COLOR_BLACK, 2);
 }
 
 static void file_draw(int x, int y, int w, int h) {
     draw_rect(x, y, w, h, COLOR_WHITE);
-    draw_rounded_rect(x+10, y+10, w-20, 36, 8, COLOR_LIGHT);
-    draw_text(x+18, y+16, file_path, COLOR_DARK, 2);
-    int iy = y + 56;
-    for (int i=file_scroll; i<file_count && i<file_scroll+((h-76)/46); i++) {
-        draw_rounded_rect(x+10, iy, w-20, 40, 8, COLOR_LIGHT);
-        draw_text(x+20, iy+10, file_entries[i], COLOR_BLACK, 2);
-        iy += 46;
+    file_sidebar_draw(x, y, h);
+    int lx = x + FILE_SIDEBAR_W + 4;
+    int lw = w - FILE_SIDEBAR_W - 4;
+    draw_rounded_rect(lx+6, y+6, lw-12, 36, 8, COLOR_LIGHT);
+    draw_text(lx+14, y+14, file_path, COLOR_DARK, 2);
+    int iy = y + 52;
+    int max_rows = (h - 62) / FILE_ROW_H;
+    for (int i=file_scroll; i<file_count && i<file_scroll+max_rows; i++) {
+        if (file_is_dir[i]) {
+            draw_rounded_rect(lx+6, iy, lw-12, 36, 8, COLOR_LIGHT);
+            file_draw_folder_icon(lx+14, iy+8);
+            draw_text(lx+36, iy+9, file_entries[i], COLOR_BLACK, 2);
+        } else {
+            draw_rounded_rect(lx+6, iy, lw-12, 36, 8, COLOR_WHITE);
+            draw_rect(lx+6, iy, 2, 36, COLOR_LIGHT);
+            file_draw_file_icon(lx+14, iy+8);
+            draw_text(lx+36, iy+9, file_entries[i], COLOR_DARK, 2);
+        }
+        iy += FILE_ROW_H;
     }
+    if (file_count == 0) {
+        draw_text_centered_in(lx, y+h/2-10, lw, "(empty)", COLOR_MID, 2);
+    }
+    if (file_clipboard_mode > 0) {
+        int by = y + h - 44;
+        draw_rounded_rect(lx+6, by, lw-12, 36, 8, COLOR_DARK);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "[C] %s (tap to paste)", file_clipboard_mode==1 ? "Copied" : "Moved");
+        draw_text_centered_in(lx+6, by+9, lw-12, msg, COLOR_WHITE, 2);
+    }
+}
+
+static void file_action_menu_draw(int tx, int ty) {
+    int mw = 220, mh = 250;
+    int mx = tx - mw/2, my = ty - mh - 10;
+    if (mx < 10) mx = 10;
+    if (mx + mw > screen_width - 10) mx = screen_width - mw - 10;
+    if (my < TOPBAR_H + 10) my = ty + 10;
+    draw_rounded_rect(mx, my, mw, mh, CORNER_R, COLOR_WHITE);
+    draw_rect(mx, my, mw, 36, COLOR_DARK);
+    draw_text_centered_in(mx, my+8, mw, file_entries[file_action_idx], COLOR_WHITE, 2);
+    const char *opts[] = {"Open", "Copy", "Move", "Info", "Delete"};
+    unsigned char colors[] = {COLOR_LIGHT, COLOR_LIGHT, COLOR_LIGHT, COLOR_LIGHT, COLOR_LIGHT};
+    for (int i=0; i<5; i++) {
+        int oy = my + 44 + i * 40;
+        draw_rounded_rect(mx+10, oy, mw-20, 34, 6, colors[i]);
+        draw_text_centered_in(mx+10, oy+8, mw-20, opts[i], COLOR_BLACK, 2);
+    }
+}
+
+static void file_info_draw(void) {
+    int mw = 340, mh = 220;
+    int mx = (screen_width - mw)/2, my = (screen_height - mh)/2;
+    draw_rounded_rect(mx, my, mw, mh, CORNER_R, COLOR_WHITE);
+    draw_rect(mx, my, mw, 36, COLOR_DARK);
+    draw_text_centered_in(mx, my+8, mw, "File Info", COLOR_WHITE, 2);
+    draw_text(mx+20, my+52, "Name:", COLOR_MID, 2);
+    draw_text(mx+20, my+72, file_info_name, COLOR_BLACK, 2);
+    draw_text(mx+20, my+102, "Size:", COLOR_MID, 2);
+    draw_text(mx+20, my+122, file_info_size, COLOR_BLACK, 2);
+    draw_text(mx+20, my+152, "Modified:", COLOR_MID, 2);
+    draw_text(mx+20, my+172, file_info_time, COLOR_BLACK, 2);
+    draw_rounded_rect(mx+10, my+mh-44, mw-20, 34, 6, COLOR_DARK);
+    draw_text_centered_in(mx+10, my+mh-36, mw-20, "Close", COLOR_WHITE, 2);
+}
+
+static void file_confirm_delete_draw(void) {
+    int mw = 300, mh = 160;
+    int mx = (screen_width - mw)/2, my = (screen_height - mh)/2;
+    draw_rounded_rect(mx, my, mw, mh, CORNER_R, COLOR_WHITE);
+    draw_text_centered_in(mx, my+20, mw, "Delete?", COLOR_BLACK, 3);
+    draw_text_centered_in(mx, my+60, mw, file_entries[file_action_idx], COLOR_DARK, 2);
+    draw_rounded_rect(mx+10, my+90, mw/2-20, 38, 8, COLOR_DARK);
+    draw_text_centered_in(mx+10, my+98, mw/2-20, "Yes", COLOR_WHITE, 2);
+    draw_rounded_rect(mx+mw/2+10, my+90, mw/2-20, 38, 8, COLOR_MID);
+    draw_text_centered_in(mx+mw/2+10, my+98, mw/2-20, "No", COLOR_WHITE, 2);
+}
+
+static void file_action_open(void) {
+    if (file_action_idx < 0 || file_action_idx >= file_count) return;
+    char full[512];
+    snprintf(full, sizeof(full), "%s/%s", file_path, file_entries[file_action_idx]);
+    if (file_is_dir[file_action_idx]) {
+        file_load(full);
+    } else {
+        if (strstr(file_entries[file_action_idx], ".bmp")) draw_bmp(full, 0, 0);
+        else if (strstr(file_entries[file_action_idx], ".pgm")) draw_pgm(full, 0, 0);
+    }
+}
+
+static void file_action_copy(void) {
+    if (file_action_idx < 0 || file_action_idx >= file_count) return;
+    snprintf(file_clipboard, sizeof(file_clipboard), "%s/%s", file_path, file_entries[file_action_idx]);
+    file_clipboard_mode = 1;
+}
+
+static void file_action_move_start(void) {
+    if (file_action_idx < 0 || file_action_idx >= file_count) return;
+    snprintf(file_clipboard, sizeof(file_clipboard), "%s/%s", file_path, file_entries[file_action_idx]);
+    file_clipboard_mode = 2;
+}
+
+static void file_action_paste(void) {
+    if (file_clipboard_mode == 0 || file_clipboard[0] == 0) return;
+    char *src_name = strrchr(file_clipboard, '/');
+    if (!src_name) return;
+    src_name++;
+    char dst[512];
+    snprintf(dst, sizeof(dst), "%s/%s", file_path, src_name);
+    char cmd[1200];
+    int mode = file_clipboard_mode;
+    if (mode == 1) {
+        snprintf(cmd, sizeof(cmd), "cp -r \"%s\" \"%s\"", file_clipboard, dst);
+    } else {
+        snprintf(cmd, sizeof(cmd), "mv \"%s\" \"%s\"", file_clipboard, dst);
+    }
+    system(cmd);
+    file_clipboard[0] = 0;
+    file_clipboard_mode = 0;
+    file_load(file_path);
+    notif_add("File Manager", mode==1 ? "Copied" : "Moved", "OK");
+}
+
+static void file_action_info(void) {
+    if (file_action_idx < 0 || file_action_idx >= file_count) return;
+    char full[512];
+    snprintf(full, sizeof(full), "%s/%s", file_path, file_entries[file_action_idx]);
+    strncpy(file_info_name, file_entries[file_action_idx], 127);
+    struct stat st;
+    if (stat(full, &st)==0) {
+        if (S_ISDIR(st.st_mode)) {
+            snprintf(file_info_size, sizeof(file_info_size), "Directory");
+        } else if (st.st_size < 1024) {
+            snprintf(file_info_size, sizeof(file_info_size), "%d bytes", (int)st.st_size);
+        } else if (st.st_size < 1048576) {
+            snprintf(file_info_size, sizeof(file_info_size), "%d KB", (int)(st.st_size/1024));
+        } else {
+            snprintf(file_info_size, sizeof(file_info_size), "%d MB", (int)(st.st_size/1048576));
+        }
+        struct tm *tm_info = localtime(&st.st_mtime);
+        strftime(file_info_time, sizeof(file_info_time), "%Y-%m-%d %H:%M", tm_info);
+    }
+    file_mode = 2;
+}
+
+static void file_action_delete_start(void) {
+    file_confirm_delete = 1;
+    file_mode = 3;
+}
+
+static void file_action_delete_confirm(void) {
+    if (file_action_idx < 0 || file_action_idx >= file_count) return;
+    char full[512];
+    snprintf(full, sizeof(full), "%s/%s", file_path, file_entries[file_action_idx]);
+    char cmd[1200];
+    if (file_is_dir[file_action_idx]) {
+        snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", full);
+    } else {
+        snprintf(cmd, sizeof(cmd), "rm \"%s\"", full);
+    }
+    system(cmd);
+    file_confirm_delete = 0;
+    file_mode = 0;
+    notif_add("File Manager", "Deleted", "OK");
+    file_load(file_path);
 }
 
 static void file_handle(int tx, int ty, int released) {
     if (!released) return;
-    int iy = TOPBAR_H + 56;
-    for (int i=file_scroll; i<file_count; i++) {
-        if (point_in_rect(tx, ty, 10, iy, screen_width-20, 40)) {
-            char full[512]; snprintf(full, sizeof(full), "%s/%s", file_path, file_entries[i]);
-            struct stat st;
-            if (stat(full, &st)==0 && S_ISDIR(st.st_mode)) file_load(full);
-            else if (strstr(file_entries[i], ".bmp")) draw_bmp(full, 0, 0);
-            else if (strstr(file_entries[i], ".pgm")) draw_pgm(full, 0, 0);
+    if (file_mode == 2) {
+        int mw = 340, mh = 220;
+        int mx = (screen_width - mw)/2, my = (screen_height - mh)/2;
+        if (point_in_rect(tx, ty, mx+10, my+mh-44, mw-20, 34)) {
+            file_mode = 0;
+        }
+        return;
+    }
+    if (file_mode == 3) {
+        int mw = 300, mh = 160;
+        int mx = (screen_width - mw)/2, my = (screen_height - mh)/2;
+        if (point_in_rect(tx, ty, mx+10, my+90, mw/2-20, 38)) {
+            file_action_delete_confirm();
+        } else if (point_in_rect(tx, ty, mx+mw/2+10, my+90, mw/2-20, 38)) {
+            file_mode = 0;
+            file_confirm_delete = 0;
+        }
+        return;
+    }
+    if (file_mode == 1) {
+        int mw = 220, mh = 250;
+        int mx = tx - mw/2, my = ty - mh - 10;
+        if (mx < 10) mx = 10;
+        if (mx + mw > screen_width - 10) mx = screen_width - mw - 10;
+        if (my < TOPBAR_H + 10) my = ty + 10;
+        if (!point_in_rect(tx, ty, mx, my, mw, mh)) {
+            file_mode = 0; return;
+        }
+        for (int i=0; i<5; i++) {
+            int oy = my + 44 + i * 40;
+            if (point_in_rect(tx, ty, mx+10, oy, mw-20, 34)) {
+                file_mode = 0;
+                switch (i) {
+                    case 0: file_action_open(); break;
+                    case 1: file_action_copy(); break;
+                    case 2: file_action_move_start(); break;
+                    case 3: file_action_info(); break;
+                    case 4: file_action_delete_start(); break;
+                }
+                return;
+            }
+        }
+        return;
+    }
+    if (tx < FILE_SIDEBAR_W) {
+        int sy = TOPBAR_H + 48;
+        const char *bookmarks[] = {"/", "/mnt/us", "/mnt/us/documents", "/mnt/us/extensions", "/mnt/us/music", "/mnt/us/pictures"};
+        int nbook = 6;
+        for (int i=0; i<nbook; i++) {
+            if (point_in_rect(tx, ty, 8, sy, FILE_SIDEBAR_W-16, 32)) {
+                file_load(bookmarks[i]);
+                return;
+            }
+            sy += 38;
+        }
+        sy += 10;
+        sy += 10;
+        if (point_in_rect(tx, ty, 8, sy, FILE_SIDEBAR_W-16, 32)) {
+            char *slash = strrchr(file_path, '/');
+            if (slash && slash != file_path) { *slash = 0; file_load(file_path); }
             return;
         }
-        iy += 46;
+        return;
     }
-    if (ty > TOPBAR_H && ty < TOPBAR_H + 46) {
+    if (file_clipboard_mode > 0) {
+        int by = screen_height - 44;
+        if (point_in_rect(tx, ty, FILE_SIDEBAR_W+10, by, screen_width-FILE_SIDEBAR_W-20, 36)) {
+            file_action_paste();
+            return;
+        }
+    }
+    int lx = FILE_SIDEBAR_W + 4;
+    int lw = screen_width - FILE_SIDEBAR_W - 4;
+    int iy = TOPBAR_H + 52;
+    int max_rows = (screen_height - TOPBAR_H - 62) / FILE_ROW_H;
+    for (int i=file_scroll; i<file_count && i<file_scroll+max_rows; i++) {
+        if (point_in_rect(tx, ty, lx+6, iy, lw-12, FILE_ROW_H)) {
+            file_action_idx = i;
+            file_mode = 1;
+            return;
+        }
+        iy += FILE_ROW_H;
+    }
+    if (ty < TOPBAR_H + 52 && ty > TOPBAR_H + 40) {
         char *slash = strrchr(file_path, '/');
         if (slash && slash != file_path) { *slash = 0; file_load(file_path); }
     }
